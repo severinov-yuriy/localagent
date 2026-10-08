@@ -27,6 +27,7 @@ DEFAULTS = {
         "idle_timeout_s": 55,
         "verify_ssl": True,
         "trusted_hosts": [],
+        "allow_external": False,
         "ca_bundle": None,
         "proxy": None,
         "retry": {"max_attempts": 3, "backoff_s": 1.0, "statuses": [429, 500, 502, 503, 504]},
@@ -194,7 +195,7 @@ def validate(c):
 
     llm = c["llm"]
     _keys(llm, {"base_url", "api_key_env", "api_key_file", "http_referer", "x_title", "connect_timeout_s", "idle_timeout_s",
-                "verify_ssl", "trusted_hosts", "ca_bundle", "proxy", "retry", "models", "profiles", "sampling", "max_tokens",
+                "verify_ssl", "trusted_hosts", "allow_external", "ca_bundle", "proxy", "retry", "models", "profiles", "sampling", "max_tokens",
                 "reasoning_format"}, "llm")
     for key in ("base_url", "api_key_env"):
         if not isinstance(llm[key], str) or not llm[key]:
@@ -204,6 +205,8 @@ def validate(c):
     for key in ("api_key_file", "ca_bundle", "proxy", "http_referer", "x_title"):
         if llm[key] is not None and not isinstance(llm[key], str):
             raise ConfigError(f"llm.{key} must be string or null")
+    if not isinstance(llm.get("allow_external", False), bool):
+        raise ConfigError("llm.allow_external must be boolean")
     if not isinstance(llm["trusted_hosts"], list) or not all(isinstance(x, str) and x for x in llm["trusted_hosts"]):
         raise ConfigError("llm.trusted_hosts must be a list of non-empty hostnames")
     if not llm["verify_ssl"]:

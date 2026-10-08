@@ -37,8 +37,9 @@ def test_absolute_path_outside_rejected(workspace, tmp_path):
                                  "AGENTS.md", "id_rsa", "sub/.env"])
 def test_deny_paths_rejected(workspace, rel):
     p = _p(workspace)
+    operation = "write" if rel == "AGENTS.md" else "read"
     with pytest.raises(PolicyError):
-        p.path(rel)
+        p.authorize(rel, operation)
 
 
 def test_deny_priority_over_allow(workspace):

@@ -10,9 +10,9 @@ from pathlib import Path
 
 DANGEROUS_MODULES = {
     "subprocess", "socket", "ctypes", "ssl", "urllib", "http", "requests",
-    "paramiko", "pexpect", "multiprocessing",
+    "paramiko", "pexpect", "multiprocessing", "importlib",
 }
-DANGEROUS_CALLS = {"system", "popen", "remove", "unlink", "rmdir", "execv", "execve", "spawn"}
+DANGEROUS_CALLS = {"system", "popen", "remove", "unlink", "rmdir", "rmtree", "execv", "execve", "spawn", "kill", "terminate"}
 DYNAMIC_CALLS = {"eval", "exec", "compile", "__import__"}
 
 def check_file(path: str | Path, workspace: str | Path) -> list[str]:
@@ -35,6 +35,10 @@ def check_file(path: str | Path, workspace: str | Path) -> list[str]:
         elif isinstance(node, ast.ImportFrom):
             if (node.module or "").split(".")[0] in DANGEROUS_MODULES:
                 findings.append(f"import:{node.module}")
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Call):
+            fn = node.value.func
+            if isinstance(fn, ast.Attribute) and isinstance(fn.value, ast.Name) and fn.value.id == "os" and fn.attr == "putenv":
+                findings.append("os.environ.write")
         elif isinstance(node, ast.Call):
             fn = node.func
             name = fn.id if isinstance(fn, ast.Name) else fn.attr if isinstance(fn, ast.Attribute) else ""
@@ -42,11 +46,23 @@ def check_file(path: str | Path, workspace: str | Path) -> list[str]:
                 findings.append(f"dynamic:{name}")
             if name in DANGEROUS_CALLS:
                 findings.append(f"call:{name}")
-            if isinstance(fn, ast.Attribute) and fn.attr in {"open", "unlink", "remove", "rmdir", "rename", "replace"}:
+            if isinstance(fn, ast.Name) and fn.id == "open":
                 if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
                     value = node.args[0].value
-                    if value.startswith(("/", "~")) or "$HOME" in value:
+                    if value.startswith(("/", "~")) or "$HOME" in value or value.startswith("${HOME}"):
                         findings.append(f"path:{value}")
+                    else:
+                        findings.append(f"write:{value}")
+            if isinstance(fn, ast.Attribute) and fn.attr in {"open", "unlink", "remove", "rmdir", "rmtree", "rename", "replace", "write_text", "write_bytes"}:
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    value = node.args[0].value
+                    if value.startswith(("/", "~")) or "$HOME" in value or value.startswith("${HOME}") or value.startswith("%USERPROFILE%"):
+                        findings.append(f"path:{value}")
+                    elif fn.attr in {"open", "write_text", "write_bytes", "rename", "replace", "unlink", "remove", "rmdir", "rmtree"} and isinstance(value, str):
+                        findings.append(f"write:{value}")
+        elif isinstance(node, ast.Subscript):
+            if isinstance(node.value, ast.Attribute) and isinstance(node.value.value, ast.Name) and node.value.value.id == "os" and node.value.attr == "environ":
+                findings.append("os.environ.write")
         elif isinstance(node, ast.Attribute):
             if node.attr in {"environ"} and isinstance(node.value, ast.Name) and node.value.id == "os":
                 findings.append("os.environ")

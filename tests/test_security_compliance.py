@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 import pytest
+import json
 
 from localagent.agent import Agent
 from localagent.llm import LLMResponse, ToolCall
@@ -105,4 +106,4 @@ def test_mutation_permission_errors_are_audited(workspace, cfg, ui, fake_llm, mo
     result = agent.run("mutate")
     assert result["summary"] == "ok"
     log = "\n".join(p.read_text(encoding="utf-8") for p in (workspace / ".agent" / "logs").rglob("*.jsonl"))
-    assert '"type": "permission_denied"' in log
+    assert any(json.loads(line).get("type") == "permission_denied" for line in log.splitlines())

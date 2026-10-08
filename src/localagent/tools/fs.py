@@ -6,6 +6,7 @@ import base64
 import mimetypes
 import re
 import shutil
+from pathlib import Path
 
 from .base import Tool
 from ..policy import atomic_write
@@ -111,18 +112,23 @@ class Glob(FS):
 
 
 class Grep(FS):
-    """Search case-insensitively through readable text files under allowed roots."""
+    """Search readable text files using substring or optional regex matching, excluding generated/vendor trees."""
 
     name = "grep"
     description = "Search text in workspace files."
 
     def run(self, a):
         """Return matching lines, capped by ``max_results`` and a per-file size limit."""
-        q = a["pattern"].lower()
+        q = a["pattern"]
+        regex = bool(a.get("regex", False))
+        rx = re.compile(q, re.IGNORECASE) if regex else None
         out = []
         roots = [self.p.root]
+        excluded = {".git", ".venv", "node_modules", "__pycache__"}
         for root in roots:
             for p in root.rglob("*"):
+                if any(part in excluded for part in p.parts):
+                    continue
                 try:
                     checked = self.p.authorize(p, "read")
                     if not checked.is_file() or checked.stat().st_size > min(2_000_000, self.p.max_read_bytes()):
@@ -131,7 +137,7 @@ class Grep(FS):
                 except (OSError, PermissionError):
                     continue
                 for i, line in enumerate(text.splitlines(), 1):
-                    if q in line.lower():
+                    if (rx.search(line) if rx else q.lower() in line.lower()):
                         if not self.dlp.check("filesystem.grep.result", line).allowed:
                             return "content blocked by security policy"
                         try:
@@ -293,6 +299,8 @@ class Move(FS):
         """Resolve both source and destination under write policy and use ``shutil.move``."""
         s = self.p.authorize(a["src"], "move")
         d = self.p.authorize(a["dst"], "move")
+        if d.exists() or d.is_symlink():
+            raise FileExistsError(f"destination exists: {d.relative_to(self.p.root)}")
         d.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(s), str(d))
         return "moved"
@@ -314,23 +322,24 @@ class Delete(FS):
 
 
 class Undo(FS):
-    """Restore the current ``<file>.agent.bak`` backup."""
+    """Restore a session-scoped backup from ``.agent/backups/<session>``."""
 
     name = "undo"
-    description = "Restore the most recent .agent.bak file."
+    description = "Restore a previous session backup for a workspace path."
 
     def run(self, a):
-        """Copy the adjacent backup file over the target."""
         p = self.p.authorize(a["path"], "write")
-        bak = p.with_name(p.name + ".agent.bak")
+        session = a.get("session") or getattr(self.p, "session_id", "default")
         try:
-            bak = self.p.authorize(bak, "backup", actor="runtime")
-        except PermissionError as exc:
-            raise FileNotFoundError("backup not found") from exc
+            rel = p.relative_to(self.p.root)
+        except ValueError as exc:
+            raise PermissionError("path outside workspace") from exc
+        bak = self.p.root / ".agent" / "backups" / Path(session).name / rel
+        bak = self.p.authorize(bak, "backup", actor="runtime")
         if not bak.is_file():
             raise FileNotFoundError("backup not found")
         shutil.copy2(bak, p)
-        return "restored"
+        return {"restored": str(p.relative_to(self.p.root)), "session": Path(session).name}
 
 
 class ViewImage(FS):

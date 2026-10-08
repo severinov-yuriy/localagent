@@ -369,9 +369,32 @@ class Agent:
             if exec_mode == "off":
                 allowed = False
             elif exec_mode == "ask":
-                allowed = False if self.cfg["agent"].get("mode") == "headless" else self.ui.confirm(tool.name, args)
+                if self.cfg["agent"].get("mode") == "headless":
+                    allowed = False
+                else:
+                    confirm_args = dict(args)
+                    preview = getattr(tool, "preview", None)
+                    if preview is not None:
+                        confirm_args["_security"] = preview(tool.name, getattr(tool, "execution_policy").script_argv(args["path"], args.get("args", [])) if tool.name == "run_script" else getattr(tool, "execution_policy").module_argv(args["module"], args.get("args", [])) if tool.name == "run_module" else getattr(tool, "execution_policy").test_argv(args.get("targets", [])))
+                    allowed = self.ui.confirm(tool.name, confirm_args)
             else:  # auto
-                allowed = True if self.cfg["agent"].get("mode") != "headless" else True
+                if self.cfg["agent"].get("mode") != "headless":
+                    allowed = True
+                elif PROCESS_EXECUTE in capabilities:
+                    preview = getattr(tool, "preview", None)
+                    if preview is not None:
+                        try:
+                            op = tool.name
+                            ep = tool.execution_policy
+                            argv = ep.script_argv(args["path"], args.get("args", [])) if op == "run_script" else ep.module_argv(args["module"], args.get("args", [])) if op == "run_module" else ep.test_argv(args.get("targets", []))
+                            ctx = preview(op, argv)
+                            allowed = ctx["isolation"] == "app" or bool(ctx["layers"])
+                        except Exception:
+                            allowed = False
+                    else:
+                        allowed = False
+                else:
+                    allowed = True
             self.log.emit("user_confirm", tool=tool.name, capabilities=sorted(capabilities),
                           allowed=allowed, confirmation=f"exec.{exec_mode}")
             return allowed
@@ -597,6 +620,12 @@ class Agent:
                         else:
                             self.log.emit("tool_call", step=self.steps, name=tc.name, arguments=args, capabilities=sorted(tool.get_capabilities()))
                             result = tool.run(args)
+                            if PROCESS_EXECUTE in tool.get_capabilities() and isinstance(result, dict) and result.get("audit"):
+                                audit = dict(result["audit"])
+                                audit["return_code"] = result.get("returncode")
+                                audit["output_size"] = len(result.get("stdout", "")) + len(result.get("stderr", ""))
+                                audit["dlp_blocked"] = bool(result.get("output_blocked"))
+                                self.log.emit("exec", step=self.steps, **audit)
                             successful = self._successful_changes(tool, result)
                             if successful:
                                 seen.clear()

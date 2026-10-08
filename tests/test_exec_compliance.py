@@ -31,16 +31,15 @@ def require_sandbox():
 def test_typed_execution_tools(workspace, cfg):
     enable(cfg)
     tools = build_tools(cfg)
-    assert {"run_script", "run_tests"} <= set(tools)
-    assert "run_module" not in tools
+    assert {"run_script", "run_tests", "run_module"} <= set(tools)
     assert not {"run_python", "run_command", "shell"} & set(tools)
 
 
-def test_module_is_explicit_opt_in(workspace, cfg):
+def test_module_can_be_explicitly_disabled(workspace, cfg):
     enable(cfg)
-    cfg["exec"]["allow_module"] = True
+    cfg["exec"]["allow_module"] = False
     tools = build_tools(cfg)
-    assert "run_module" in tools
+    assert "run_module" not in tools
 
 
 def test_off_is_default_and_blocks_execution(workspace, cfg):
@@ -67,10 +66,12 @@ def test_workspace_cannot_override_security_sections(workspace):
     assert c["permissions"]["confirm"] == "ask"
 
 
-def test_agent_can_read_but_not_write_trusted_trees(workspace, cfg):
+def test_agent_work_zones_are_writable_and_control_plane_is_not(workspace, cfg):
     p = Policy(cfg)
     for path in ("src/a.py", "scripts/a.py", "tests/a.py"):
         assert p.decision(path, "read").allowed
+        assert p.decision(path, "write").allowed
+    for path in ("AGENTS.md", "agents/a.md", "skills/a.md", ".pi/config", ".agent/config.yaml"):
         with pytest.raises(PolicyError):
             p.authorize(path, "write")
 
@@ -100,7 +101,7 @@ def test_module_under_src_when_explicitly_enabled(workspace, cfg):
     assert r["ok"] and "module-ok" in r["stdout"]
 
 
-def test_run_tests_cannot_be_used_to_execute_agent_modified_tests(workspace, cfg, ui, fake_llm):
+def test_run_tests_can_execute_agent_modified_tests(workspace, cfg, ui, fake_llm):
     enable(cfg)
     (workspace / "tests/t.py").write_text("def test_x(): assert True\n")
     llm = fake_llm([
@@ -114,7 +115,7 @@ def test_run_tests_cannot_be_used_to_execute_agent_modified_tests(workspace, cfg
     ])
     result = Agent(cfg, llm, build_tools(cfg), ui).run("write and run a test")
     assert result["status"] in {"ok", "failed"}
-    assert not (workspace / "tests/new.py").exists()
+    assert (workspace / "tests/new.py").exists()
 
 
 def test_shell_and_inline_code_rejected(workspace, cfg):

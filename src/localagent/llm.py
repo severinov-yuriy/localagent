@@ -163,6 +163,10 @@ class OpenAICompatClient:
         if model not in profiles:
             raise ConfigError(f"llm model {model!r} has no validated profile")
         profile = profiles[model]
+        host = (self.cfg["llm"].get("base_url") or "").lower()
+        external = not any(x in host for x in ("127.0.0.1", "localhost", "::1"))
+        if external and not self.cfg["llm"].get("allow_external", False):
+            raise ConfigError("external LLM provider is disabled; set llm.allow_external=true in global config")
         b = {
             "model": model,
             "messages": r.messages,
@@ -174,7 +178,12 @@ class OpenAICompatClient:
             if v is not None:
                 b[k] = v
         if b.get("max_tokens") is not None and profile.get("max_output"):
-            b["max_tokens"] = min(int(b["max_tokens"]), int(profile["max_output"]))
+            requested = int(b["max_tokens"])
+            maximum = int(profile["max_output"])
+            if requested > maximum:
+                import sys
+                print(f"warning: max_tokens clipped from {requested} to provider limit {maximum}", file=sys.stderr)
+                b["max_tokens"] = maximum
         if r.response_format:
             b["response_format"] = r.response_format
         if r.extra_body:

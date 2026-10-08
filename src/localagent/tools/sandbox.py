@@ -262,10 +262,11 @@ def apply_landlock(workspace: Path, scratch: Path, trusted_executable: Path, rw_
     # receive write/create/delete rights.
     _add_path_rule(ruleset, workspace, LANDLOCK_READ_ONLY_FS)
     rw_dirs = list(rw_dirs or ("src", "tests", "scripts", "scratch", "data", "docs"))
+    protected = {"AGENTS.md", "agents", "skills", ".pi", ".agent"}
     for rel in rw_dirs:
         candidate = Path(rel)
-        if candidate.is_absolute() or ".." in candidate.parts:
-            raise RuntimeError(f"invalid rw_dirs entry: {rel}")
+        if candidate.is_absolute() or ".." in candidate.parts or (candidate.parts and candidate.parts[0] in protected):
+            raise RuntimeError(f"rw_dirs cannot include control-plane path: {rel}")
         target = (workspace / candidate).resolve(strict=False)
         if target.exists() and target.is_dir():
             _add_path_rule(ruleset, target, writable)

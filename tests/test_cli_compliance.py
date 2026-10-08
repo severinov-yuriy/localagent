@@ -30,10 +30,10 @@ def test_doctor_exec_backend_reports_kernel_capabilities(workspace, capsys):
     assert rc in (0, 2)
 
 
-def test_doctor_fails_on_missing_agents_dir(tmp_path, capsys):
+def test_doctor_allows_missing_agents_dir(tmp_path, capsys):
     (tmp_path / "skills").mkdir()
     rc = main(["doctor", "--workspace", str(tmp_path)])
-    assert rc != 0
+    assert rc == 0
 
 
 def test_roles_lists_files(workspace, capsys):

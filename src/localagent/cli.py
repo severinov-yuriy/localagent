@@ -88,6 +88,11 @@ def _build_parser():
     skills.add_argument("action", choices=["list"])
     _add_workspace(skills)
 
+    undo = sub.add_parser("undo")
+    undo.add_argument("--session")
+    undo.add_argument("--path")
+    _add_workspace(undo)
+
     logs = sub.add_parser("logs")
     logs.add_argument("action", choices=["list", "show", "tail", "export", "prune", "verify"], default="list", nargs="?")
     logs.add_argument("--session")
@@ -145,12 +150,42 @@ def _handle_simple_commands(args, cfg):
     if args.cmd == "skills":
         print("\n".join(Context(args.workspace, policy=Policy(cfg)).skill_names()))
         return 0
+    if args.cmd == "undo":
+        from .tools.fs import Undo
+        policy = Policy(cfg)
+        session = args.session or getattr(policy, "session_id", "default")
+        backup_root = Path(args.workspace) / ".agent" / "backups" / Path(session).name
+        if args.path:
+            result = Undo(policy).run({"path": args.path, "session": session})
+            print(result)
+            return 0
+        if not backup_root.is_dir():
+            print("backup session not found", file=sys.stderr)
+            return 1
+        restored = 0
+        for backup in backup_root.rglob("*"):
+            if not backup.is_file():
+                continue
+            rel = backup.relative_to(backup_root)
+            target = policy.authorize(rel, "write")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            import shutil
+            shutil.copy2(backup, target)
+            restored += 1
+        print(f"restored {restored} file(s) from session {Path(session).name}")
+        return 0
     if args.cmd == "doctor":
+        import importlib.util, sqlite3, ssl, sys
+        workspace = Path(args.workspace)
         checks = [
             ("config", True),
-            ("workspace", Path(args.workspace).is_dir()),
-            ("agent_dir", not (Path(args.workspace) / "agents").exists() or (Path(args.workspace) / "agents").is_dir()),
-            ("skills_dir", not (Path(args.workspace) / "skills").exists() or (Path(args.workspace) / "skills").is_dir()),
+            ("python", sys.version_info >= (3, 10)),
+            ("deps", all(importlib.util.find_spec(x) for x in ("httpx", "yaml"))),
+            ("fts5", bool(sqlite3.connect(":memory:").execute("select sqlite_compileoption_used('ENABLE_FTS5')").fetchone()[0])),
+            ("tls_ca", bool(ssl.get_default_verify_paths().cafile or ssl.get_default_verify_paths().capath)),
+            ("workspace", workspace.is_dir()),
+            ("agent_dir", not (workspace / "agents").exists() or (workspace / "agents").is_dir()),
+            ("skills_dir", not (workspace / "skills").exists() or (workspace / "skills").is_dir()),
         ]
         ok = True
         for name, value in checks:
@@ -169,6 +204,8 @@ def _handle_simple_commands(args, cfg):
             else:
                 ready = backend["ready"]
             print(f"exec.isolation: {isolation}")
+            if isolation == "app":
+                print("exec.warning: app-level restrictions are not an OS security boundary")
             ok = ok and ready
         if args.live:
             try:
@@ -280,6 +317,13 @@ def main(argv=None):
         _apply_run_overrides(args, cfg)
 
     ui = UI()
+    from urllib.parse import urlparse
+    host = (urlparse(cfg["llm"].get("base_url", "")).hostname or "").lower()
+    if host and host not in {"127.0.0.1", "localhost", "::1"}:
+        if not cfg["llm"].get("allow_external", False):
+            print("external LLM provider is disabled by global llm.allow_external=false", file=sys.stderr)
+            return 2
+        print(f"WARNING: external LLM provider enabled: {host}; request data leaves the local host", file=sys.stderr)
     llm = OpenAICompatClient(cfg, ui)
     if args.cmd == "resume":
         resumed = None

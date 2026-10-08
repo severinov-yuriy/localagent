@@ -16,7 +16,7 @@ The tool registry is created per agent. Role ACLs can reduce the registry furthe
 | `make_dir` | `path` | Create a directory inside the workspace. |
 | `move` | `src`, `dst` | Move an authorized file within the workspace. |
 | `delete` | `path` | Move an authorized file to runtime-owned trash when deletion is enabled. |
-| `undo` | `path` | Restore the most recent applicable backup. |
+| `undo` | `path`, optional `session` | Restore a session-scoped backup. CLI also supports `agent undo --session ...` and `agent undo --path ...`. |
 | `view_image` | `path` | Read an image through the filesystem policy and DLP boundary; the model receives a multimodal data URL only after the security check passes. |
 
 ## Execution

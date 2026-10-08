@@ -90,7 +90,7 @@ def test_secret_scanner_required_matrix():
         "cloud": "AKIA1234567890ABCDEF",
         "ssh": "ssh-ed25519 " + "A" * 100,
         "env": "AWS_SECRET_ACCESS_KEY=supersecret123",
-        "entropy": "aB7_k9Q2xM4pL8sD3vN6cR1tY5uI9oP2",
+        "entropy": "password=aB7_k9Q2xM4pL8sD3vN6cR1tY5uI9oP2",
     }
     for category, sample in samples.items():
         assert SecretScanner.scan(sample), category

@@ -23,13 +23,14 @@ class ExecResult:
     stderr: str = ""
     timed_out: bool = False
     output_blocked: bool = False
+    audit: dict = None
 
 
 class ExecutionPolicy:
     """Default-deny typed execution; target code always runs through the launcher."""
 
     ALLOWED = {"run_script", "run_module", "run_tests"}
-    SCRIPT_ROOT = "scratch"
+    SCRIPT_ROOTS = ("scratch", "scripts", "src", "tests")
     MODULE_ROOT = "src"
 
     def __init__(self, cfg, workspace, dlp=None):
@@ -63,9 +64,9 @@ class ExecutionPolicy:
     def script_argv(self, path, args):
         if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
             raise ValueError("args must be a list of strings")
-        target = self._path(path, (self.SCRIPT_ROOT,))
+        target = self._path(path, self.SCRIPT_ROOTS)
         if target.suffix not in {".py", ".pyw"}:
-            raise PermissionError("run_script only permits Python script files under scratch/")
+            raise PermissionError("run_script only permits Python script files under scratch/, scripts/, src/, or tests/")
         return [str(self._trusted_executable), str(target), *args]
 
     def module_argv(self, module, args):
@@ -91,9 +92,9 @@ class ExecutionPolicy:
             raise PermissionError("module outside src/")
         if any(a in {"-c", "-m", "-"} or a.startswith("-c") for a in args):
             raise PermissionError("inline Python and interpreter options are forbidden")
-        # Execute the already-resolved trusted source file directly. This avoids
-        # restoring a workspace PYTHONPATH merely to make -m work.
-        return [str(self._trusted_executable), str(target), *args]
+        # Use Python's module loader so package imports and __package__ semantics
+        # are preserved. The launcher keeps the interpreter itself trusted.
+        return [str(self._trusted_executable), "-m", module, *args]
 
     def test_argv(self, targets):
         if not isinstance(targets, list) or not all(isinstance(x, str) for x in targets):
@@ -204,7 +205,7 @@ class Exec(Tool):
             mode = "auto"
         if mode == "off":
             raise PermissionError("execution disabled by exec.mode=off")
-        if mode not in {"auto", "on"}:
+        if mode not in {"auto", "ask", "on"}:
             raise PermissionError("invalid exec.mode")
         isolation = self.cfg["exec"].get("isolation", "best_effort")
         if isolation not in {"kernel", "best_effort", "app"}:
@@ -216,12 +217,51 @@ class Exec(Tool):
             raise PermissionError("best_effort isolation has no available kernel layer; use app explicitly")
         return isolation, status
 
+    def preview(self, operation, argv):
+        """Return the execution security context used for confirmation."""
+        mode, status = self._enabled()
+        import hashlib
+        target = None
+        if operation == "run_module" and len(argv) >= 3:
+            module = argv[2]
+            candidate = self.p.root / "src" / Path(*module.split("."))
+            candidate = candidate.with_suffix(".py") if candidate.with_suffix(".py").is_file() else candidate / "__main__.py"
+            if candidate.is_file():
+                target = candidate.resolve()
+        else:
+            for value in argv[1:]:
+                candidate = Path(value)
+                if candidate.is_file():
+                    target = candidate
+                    break
+        digest = None
+        if target:
+            h = hashlib.sha256()
+            with target.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            digest = h.hexdigest()
+        findings = []
+        if mode == "app":
+            from .preflight import check_targets
+            findings = check_targets([str(x) for x in argv[1:] if str(x).endswith(".py")], self.p.root)
+        return {"argv": list(argv), "path": str(target) if target else None, "sha256": digest,
+                "layers": [k for k,v in status.items() if k in {"landlock","seccomp","network"} and v],
+                "isolation": mode, "preflight": findings}
+
     def _run(self, operation, argv, timeout):
         mode, status = self._enabled()
         scratch = self.p.root.joinpath("scratch")
         scratch.mkdir(exist_ok=True)
         env = self.execution_policy.env()
+        if operation == "run_module":
+            module_path = str(self.p.root / "src")
+            env["PYTHONPATH"] = module_path + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         self.execution_policy.authorize(operation, argv, self.p.root, env, timeout)
+        rw_dirs = list(self.cfg["exec"].get("rw_dirs", ["src", "tests", "scripts", "scratch", "data", "docs"]))
+        protected = {"AGENTS.md", "agents", "skills", ".pi", ".agent"}
+        if any(Path(x).is_absolute() or ".." in Path(x).parts or Path(x).parts and Path(x).parts[0] in protected for x in rw_dirs):
+            raise PermissionError("exec.rw_dirs cannot include control-plane paths")
         spec = {
             "argv": argv,
             "cwd": str(self.p.root),
@@ -234,9 +274,10 @@ class Exec(Tool):
             "nofile": int(self.cfg["exec"].get("nofile", 4096)),
             "isolation": mode,
             "layers": [name for name, available in status.items() if name in {"landlock", "seccomp", "network"} and available],
-            "rw_dirs": self.cfg["exec"].get("rw_dirs", ["src", "tests", "scripts", "scratch", "data", "docs"]),
+            "rw_dirs": rw_dirs,
             "ro_paths": self.cfg["exec"].get("ro_paths", ["AGENTS.md", "agents", "skills", ".pi", ".agent"]),
         }
+        findings = []
         if mode == "app":
             from .preflight import check_targets
             targets = [str(x) for x in argv[1:] if str(x).endswith(".py")]
@@ -253,18 +294,47 @@ class Exec(Tool):
                                     shell=False, start_new_session=True)
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
-                return self._scan_result(ExecResult(proc.returncode, stdout or "", stderr or "", False), operation, argv, started, proc.pid)
+                result = self._scan_result(ExecResult(proc.returncode, stdout or "", stderr or "", False), operation, argv, started, proc.pid)
+                result.audit = self._audit(operation, argv, proc.pid, started, status, findings)
+                return result
             except subprocess.TimeoutExpired as exc:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
                 stdout, stderr = proc.communicate()
-                return self._scan_result(ExecResult(proc.returncode,
+                result = self._scan_result(ExecResult(proc.returncode,
                     (exc.stdout or "") if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace"),
                     (exc.stderr or "") if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace"), True), operation, argv, started, proc.pid)
+                result.audit = self._audit(operation, argv, proc.pid, started, status, findings)
+                return result
         finally:
             pass
+
+    def _audit(self, operation, argv, pid, started, status, findings):
+        import hashlib
+        target = None
+        for value in argv[1:]:
+            candidate = Path(value)
+            if candidate.is_file():
+                target = candidate
+                break
+        sha256 = None
+        if target is not None:
+            try:
+                h = hashlib.sha256()
+                with target.open("rb") as fh:
+                    for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                        h.update(chunk)
+                sha256 = h.hexdigest()
+            except OSError:
+                pass
+        return {
+            "operation": operation, "path": str(target) if target else None, "sha256": sha256,
+            "argv": list(argv), "env_keys": sorted(self.execution_policy.env().keys()), "pid": pid,
+            "layers": [name for name, available in status.items() if name in {"landlock", "seccomp", "network"} and available],
+            "duration_s": round(time.monotonic() - started, 6), "preflight": list(findings),
+        }
 
     def _scan_result(self, result, operation, argv, started, pid):
         for field in ("stdout", "stderr"):

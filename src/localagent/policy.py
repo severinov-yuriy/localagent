@@ -29,7 +29,8 @@ class FilesystemPolicy:
         ".agent/reports",
         ".agent/logs",
     )
-    _DEFAULT_CONTROL_PLANE = ("AGENTS.md", "agents", "agents/**", "skills", "skills/**", ".pi", ".pi/**", ".agent", ".agent/**")
+    _GLOBAL_CONTROL_PLANE = ("AGENTS.md", "agents", "agents/**", "skills", "skills/**", ".pi", ".pi/**", ".agent", ".agent/**")
+    _DEFAULT_CONTROL_PLANE = _GLOBAL_CONTROL_PLANE
     _PROTECTED_AGENT_PATHS = (".agent", ".agent.*")
     _PROTECTED_PI_PATHS = (".pi", ".pi.*")
 
@@ -90,7 +91,7 @@ class FilesystemPolicy:
             return True
         if actor != "runtime":
             control = perms.get("control_plane", list(self._DEFAULT_CONTROL_PLANE))
-            if operation in self.WRITE_OPS and self._matches(real, control):
+            if operation in self.WRITE_OPS and (self._matches(real, self._GLOBAL_CONTROL_PLANE) or self._matches(real, control)):
                 return True
             if operation in self.WRITE_OPS:
                 control_write = perms.get("control_plane_write", ())
@@ -192,13 +193,16 @@ class FilesystemPolicy:
         return target
 
     def backup(self, path: Path) -> Path | None:
-        """Create a single runtime-owned sibling backup when enabled."""
+        """Create a session-scoped runtime-owned backup under .agent/backups."""
         if not self.cfg["permissions"].get("backup", True):
             return None
         source = self.authorize(path, "backup", actor="runtime")
         if not source.exists() or not source.is_file():
             return None
-        backup_path = source.with_name(source.name + ".agent.bak")
+        sid = getattr(self, "session_id", "default")
+        rel = source.relative_to(self.root)
+        backup_path = self.root / ".agent" / "backups" / sid / rel
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
         self.authorize(backup_path, "backup", actor="runtime")
         shutil.copy2(source, backup_path)
         return backup_path
@@ -212,9 +216,16 @@ def atomic_write(path: str | os.PathLike[str] | Path, data: bytes) -> None:
     """Atomically replace a file using a temporary file in the same directory."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
+    mode = None
+    try:
+        mode = target.stat().st_mode & 0o7777
+    except FileNotFoundError:
+        pass
     tmp = target.with_name(target.name + f".tmp-{os.getpid()}-{uuid.uuid4().hex[:8]}")
     try:
         tmp.write_bytes(data)
+        if mode is not None:
+            os.chmod(tmp, mode)
         os.replace(tmp, target)
     finally:
         try:

@@ -95,7 +95,7 @@ Not every OpenRouter model supports every optional parameter. In particular, che
 | `deny_patterns` | built-in secret/control patterns | Path patterns denied before role ACL evaluation. |
 | `deny` | `[]` | Additional explicit deny patterns. |
 | `control_plane` | `AGENTS.md`, `agents`, `agents/**`, `.agent/config.yaml`, `.agent/config.yml` | Paths protected from agent mutation and, where applicable, agent reads. |
-| `backup` | `true` | Create a runtime-owned sibling backup before supported mutations. |
+| `backup` | `true` | Create a runtime-owned session backup under `.agent/backups/<session>/` before supported mutations. |
 | `max_file_bytes` | `2000000` | Maximum file size accepted for mutation operations. |
 | `max_read_bytes` | `2000000` | Maximum file size accepted for reads. |
 | `max_changes` | `200` | Mutation budget per agent run. |
@@ -139,3 +139,10 @@ LOCALAGENT_EXEC__ENABLED=true
 ```
 
 Environment values are parsed as YAML scalars, so booleans and integers remain typed.
+
+
+## Execution v3 security model
+
+`exec.isolation` is `kernel`, `best_effort`, or explicitly weaker `app`. `kernel` requires Landlock, seccomp, and loopback-only network namespace support. `best_effort` uses available kernel layers and refuses to run when none are available. `app` relies on typed execution policy and static preflight and is not an OS security boundary.
+
+The agent control plane (`AGENTS.md`, `agents/**`, `skills/**`, `.pi/**`, `.agent/**`) is protected from agent writes. Work zones are `src/**`, `tests/**`, `scripts/**`, `scratch/**`, `data/**`, and `docs/**`.

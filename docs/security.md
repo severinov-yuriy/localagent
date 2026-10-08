@@ -115,3 +115,10 @@ Security invariants are covered by focused tests in:
 - `tests/test_agent_loop_compliance.py` and `tests/test_acceptance.py` — lifecycle, resume, subagents, confirmation, and end-to-end flows.
 
 The regression suite intentionally tests both positive behavior and the absence of sensitive values in downstream sinks.
+
+
+## Execution v3 security model
+
+`exec.isolation` is `kernel`, `best_effort`, or explicitly weaker `app`. `kernel` requires Landlock, seccomp, and loopback-only network namespace support. `best_effort` uses available kernel layers and refuses to run when none are available. `app` relies on typed execution policy and static preflight and is not an OS security boundary.
+
+The agent control plane (`AGENTS.md`, `agents/**`, `skills/**`, `.pi/**`, `.agent/**`) is protected from agent writes. Work zones are `src/**`, `tests/**`, `scripts/**`, `scratch/**`, `data/**`, and `docs/**`.

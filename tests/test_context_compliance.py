@@ -50,8 +50,10 @@ def test_context_pi_directory_is_protected_except_supported_skill_root(workspace
     (workspace / ".pi" / "config.json").write_text("internal", encoding="utf-8")
     policy = FilesystemPolicy({"permissions": {"workspace_root": str(workspace), "allow_write": True}})
 
+    # Control-plane files remain readable but are never writable by the agent.
+    assert policy.authorize(workspace / ".pi" / "config.json", "read").name == "config.json"
     with pytest.raises(PolicyError):
-        policy.authorize(workspace / ".pi" / "config.json", "read")
+        policy.authorize(workspace / ".pi" / "config.json", "write")
 
 
 def test_context_pi_skill_symlink_outside_is_not_loaded(workspace, tmp_path):

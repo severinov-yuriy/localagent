@@ -88,7 +88,7 @@ agent kb add FILE [--workspace PATH]
 - one centralized `FilesystemPolicy` for agent-controlled paths;
 - default-deny access to control-plane and secret-like paths, including symlink/junction containment checks;
 - atomic file writes, single-file backups, `undo`, and an in-process unified-patch tool;
-- typed execution capabilities are sandboxed: `run_script` is limited to `scratch/`; `run_tests` may execute only the read-only `tests/` tree; `run_module` is an explicit administrative opt-in;
+- typed execution capabilities are sandboxed: `run_script` is limited to the configured work zones (`scratch/`, `scripts/`, `src/`, `tests/`); `run_tests` runs configured tests and writes JUnit output to `scratch/`; `run_module` is enabled by default when execution is enabled and uses `python -m` from `src/`;
 - context compaction and length-limited continuation;
 - SQLite/FTS5 knowledge base;
 - skills under both `skills/` and `.pi/skills/`;
@@ -98,7 +98,7 @@ agent kb add FILE [--workspace PATH]
 
 ## Security posture
 
-Filesystem operations are authorized by `FilesystemPolicy`; agent reads remain available for source, scripts, and tests, but agent writes to `src/**`, `scripts/**`, and `tests/**` are denied. Execution is disabled by default and fails closed unless the Linux kernel reports both Landlock and seccomp support. Every executed process is started by a trusted launcher with `start_new_session=True`, `NO_NEW_PRIVS`, resource limits, Landlock filesystem containment, and a focused seccomp filter. The sandbox does not grant access to `/home` merely because the interpreter itself lives there: a venv is allowed only through its trusted read-only tree.
+Filesystem operations are authorized by `FilesystemPolicy`; agent reads remain available for source, scripts, and tests, but agent logic under `AGENTS.md`, `agents/**`, `skills/**`, `.pi/**`, and `.agent/**` is protected; `src/**`, `scripts/**`, `tests/**`, `scratch/**`, `data/**`, and `docs/**` are work zones. Execution is disabled by default and fails closed unless the Linux kernel reports both Landlock and seccomp support. Every executed process is started by a trusted launcher with `start_new_session=True`, `NO_NEW_PRIVS`, resource limits, Landlock filesystem containment, and a focused seccomp filter. The sandbox does not grant access to `/home` merely because the interpreter itself lives there: a venv is allowed only through its trusted read-only tree.
 
 Workspace `.agent/config.yaml` cannot override `exec`, `llm`, `logging`, `kb`, or `permissions`; execution environment values are administrative configuration only and are never inherited from the parent process. `agent doctor --exec-backend` reports whether the kernel execution backend is actually usable.
 
