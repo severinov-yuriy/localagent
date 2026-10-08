@@ -56,7 +56,7 @@ agent doctor --live --workspace .
 
 `config show` and `config check` currently produce the same resolved YAML after validation.
 
-`doctor` checks the workspace directory plus `agents/` and `skills/`. `doctor --live` additionally calls the configured LLM endpoint.
+`doctor` checks Python/dependencies, FTS5, TLS CA availability, workspace structure and, with `--exec-backend`, all execution isolation layers. `doctor --live` additionally probes the configured API, streaming, tool calling and structured output; it reports proxy configuration without exposing credentials.
 
 ## Logs
 

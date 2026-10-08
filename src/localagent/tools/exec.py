@@ -295,7 +295,7 @@ class Exec(Tool):
             try:
                 stdout, stderr = proc.communicate(timeout=timeout)
                 result = self._scan_result(ExecResult(proc.returncode, stdout or "", stderr or "", False), operation, argv, started, proc.pid)
-                result.audit = self._audit(operation, argv, proc.pid, started, status, findings)
+                result.audit = self._audit(operation, argv, proc.pid, started, status, findings, result)
                 return result
             except subprocess.TimeoutExpired as exc:
                 try:
@@ -306,19 +306,29 @@ class Exec(Tool):
                 result = self._scan_result(ExecResult(proc.returncode,
                     (exc.stdout or "") if isinstance(exc.stdout, str) else (exc.stdout or b"").decode(errors="replace"),
                     (exc.stderr or "") if isinstance(exc.stderr, str) else (exc.stderr or b"").decode(errors="replace"), True), operation, argv, started, proc.pid)
-                result.audit = self._audit(operation, argv, proc.pid, started, status, findings)
+                result.audit = self._audit(operation, argv, proc.pid, started, status, findings, result)
                 return result
         finally:
             pass
 
-    def _audit(self, operation, argv, pid, started, status, findings):
+    def _audit(self, operation, argv, pid, started, status, findings, result):
         import hashlib
         target = None
-        for value in argv[1:]:
-            candidate = Path(value)
-            if candidate.is_file():
-                target = candidate
-                break
+        if operation == "run_module" and len(argv) >= 3:
+            module = argv[2]
+            candidate = self.p.root / "src" / Path(*str(module).split("."))
+            py = candidate.with_suffix(".py")
+            main = candidate / "__main__.py"
+            if py.is_file():
+                target = py.resolve()
+            elif main.is_file():
+                target = main.resolve()
+        else:
+            for value in argv[1:]:
+                candidate = Path(value)
+                if candidate.is_file():
+                    target = candidate.resolve()
+                    break
         sha256 = None
         if target is not None:
             try:
@@ -333,7 +343,14 @@ class Exec(Tool):
             "operation": operation, "path": str(target) if target else None, "sha256": sha256,
             "argv": list(argv), "env_keys": sorted(self.execution_policy.env().keys()), "pid": pid,
             "layers": [name for name, available in status.items() if name in {"landlock", "seccomp", "network"} and available],
-            "duration_s": round(time.monotonic() - started, 6), "preflight": list(findings),
+            "duration_s": round(time.monotonic() - started, 6),
+            "return_code": result.returncode,
+            "stdout_size": len(result.stdout),
+            "stderr_size": len(result.stderr),
+            "output_size": len(result.stdout) + len(result.stderr),
+            "output_blocked": bool(result.output_blocked),
+            "dlp": "blocked" if result.output_blocked else "clear",
+            "preflight": list(findings),
         }
 
     def _scan_result(self, result, operation, argv, started, pid):
@@ -370,22 +387,53 @@ class RunModule(Exec):
 
 class RunTests(Exec):
     name = "run_tests"
-    description = "Run pytest against the read-only tests/ tree in the kernel sandbox."
+    description = "Run pytest against tests/ in the execution sandbox."
+
+    @staticmethod
+    def _filter_output(value):
+        """Remove noisy Py4J/INFO infrastructure lines from pytest tool output."""
+        lines = []
+        for line in str(value or "").splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith("INFO") or stripped.startswith("Py4J") or "py4j" in stripped.lower():
+                continue
+            lines.append(line)
+        return "\n".join(lines)
     def run(self, a):
         argv = self.execution_policy.test_argv(a["targets"])
         r = self._run("run_tests", argv, self.cfg["exec"].get("timeout_s", 120))
+        r.stdout = self._filter_output(r.stdout)
+        r.stderr = self._filter_output(r.stderr)
         payload = {"ok": r.returncode == 0 and not r.timed_out and not r.output_blocked,
                    "is_error": r.returncode != 0 or r.timed_out or r.output_blocked, **r.__dict__}
         report = self.p.root / "scratch" / "pytest-results.xml"
         if report.is_file():
             try:
                 root = ET.parse(report).getroot()
+                cases = []
+                for case in root.iter("testcase"):
+                    item = {"test": case.attrib.get("classname", "") + ("::" if case.attrib.get("classname") else "") + case.attrib.get("name", ""),
+                            "line": int(case.attrib.get("line", 0) or 0) or None, "message": None, "status": "passed"}
+                    failure = case.find("failure")
+                    error = case.find("error")
+                    skipped = case.find("skipped")
+                    node = failure if failure is not None else error if error is not None else skipped
+                    if failure is not None:
+                        item["status"] = "failed"
+                    elif error is not None:
+                        item["status"] = "error"
+                    elif skipped is not None:
+                        item["status"] = "skipped"
+                    if node is not None:
+                        item["message"] = node.attrib.get("message") or (node.text or "").strip() or None
+                    cases.append(item)
                 payload["tests"] = {
-                    "passed": max(0, int(root.attrib.get("tests", 0)) - int(root.attrib.get("failures", 0)) - int(root.attrib.get("errors", 0)) - int(root.attrib.get("skipped", 0))),
-                    "failed": int(root.attrib.get("failures", 0)),
-                    "errors": int(root.attrib.get("errors", 0)),
-                    "skipped": int(root.attrib.get("skipped", 0)),
-                    "total": int(root.attrib.get("tests", 0)),
+                    "passed": sum(x["status"] == "passed" for x in cases),
+                    "failed": sum(x["status"] == "failed" for x in cases),
+                    "errors": sum(x["status"] == "error" for x in cases),
+                    "skipped": sum(x["status"] == "skipped" for x in cases),
+                    "total": len(cases),
+                    "cases": cases,
                 }
             except (OSError, ET.ParseError, ValueError):
                 payload["tests"] = {"parse_error": True}

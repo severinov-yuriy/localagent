@@ -159,7 +159,10 @@ class WriteFile(FS):
     def run(self, a):
         """Write the supplied UTF-8 content after size and policy checks."""
         p = self.p.authorize(a["path"], "write")
-        data = a.get("content", "").encode("utf-8")
+        content = a.get("content", "")
+        if not self.dlp.check("filesystem.write.content", content).allowed:
+            raise PermissionError("secret content cannot be written")
+        data = content.encode("utf-8")
         if len(data) > self.p.cfg["permissions"]["max_file_bytes"]:
             raise ValueError("file too large")
         self.p.backup(p)
@@ -176,6 +179,8 @@ class EditFile(FS):
     def run(self, a):
         """Perform an exact single-match text replacement and preserve one backup."""
         p = self.p.authorize(a["path"], "write")
+        if not self.dlp.check("filesystem.write.content", a.get("new", "")).allowed:
+            raise PermissionError("secret content cannot be written")
         data = p.read_bytes()
         if len(data) > self.p.cfg["permissions"]["max_read_bytes"]:
             raise ValueError("file too large")

@@ -16,6 +16,7 @@ class SecurityDecision:
     policy: str
     operation: str
     reason: str
+    tier: str = "allow"
 
 
 class SecretScanner:
@@ -159,14 +160,38 @@ def _entropy(value: str) -> float:
 
 
 class DLPPolicy:
-    """Default-deny data boundary for model context and tool arguments/results."""
+    """Three-tier DLP boundary: allow, mask for sinks, and hard-block dangerous sinks."""
+
+    MASK_OPERATIONS = ("audit", "log", "report", "session", "display")
+    BLOCK_OPERATIONS = ("execution", "filesystem.write", "filesystem.delete", "tool.argument", "network")
 
     def __init__(self, scanner: type[SecretScanner] | None = None):
         self.scanner = scanner or SecretScanner
 
+    @classmethod
+    def tier_for(cls, operation: str) -> str:
+        op = str(operation).lower()
+        if any(op.startswith(prefix) for prefix in cls.MASK_OPERATIONS):
+            return "mask"
+        if any(op.startswith(prefix) for prefix in cls.BLOCK_OPERATIONS):
+            return "block"
+        return "block"
+
     def check(self, operation: str, value: Any) -> SecurityDecision:
-        """Return an allow/block decision without returning sensitive content."""
+        """Return an explicit allow/mask/block decision without returning secrets."""
+        tier = self.tier_for(operation)
         reason = self.scanner.scan(value)
         if reason:
-            return SecurityDecision(False, "DLPPolicy", operation, "content blocked by security policy")
-        return SecurityDecision(True, "DLPPolicy", operation, "allowed")
+            if tier == "mask":
+                return SecurityDecision(True, "DLPPolicy", operation, "secret content must be redacted at sink", "mask")
+            return SecurityDecision(False, "DLPPolicy", operation, "content blocked by security policy", "block")
+        return SecurityDecision(True, "DLPPolicy", operation, "allowed", "allow")
+
+    def sanitize(self, operation: str, value: Any) -> tuple[Any, SecurityDecision]:
+        """Apply the configured tier: mask durable sinks, block dangerous sinks."""
+        decision = self.check(operation, value)
+        if decision.tier == "mask" and not decision.reason == "allowed":
+            return self.scanner.redact(value), decision
+        if decision.tier == "block" and not decision.allowed:
+            return None, decision
+        return value, decision

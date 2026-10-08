@@ -208,15 +208,35 @@ def _handle_simple_commands(args, cfg):
                 print("exec.warning: app-level restrictions are not an OS security boundary")
             ok = ok and ready
         if args.live:
+            import urllib.parse
+            base = cfg["llm"].get("base_url", "")
+            parsed = urllib.parse.urlparse(base)
+            proxy = cfg["llm"].get("proxy") or os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY")
+            print(f"proxy: {'OK' if not proxy or urllib.parse.urlparse(proxy).scheme in {'http','https','socks5','socks5h'} else 'FAIL'}")
+            print(f"api_endpoint: {'OK' if parsed.scheme in {'http','https'} and parsed.netloc else 'FAIL'}")
             try:
                 client = OpenAICompatClient(cfg)
                 try:
-                    client.complete(ChatRequest([{"role": "user", "content": "Reply only OK"}], max_tokens=16))
+                    response = client.complete(ChatRequest([{"role": "user", "content": "Reply only OK"}], max_tokens=16))
+                    print("llm: OK")
+                    print("streaming: OK" if response.streamed else "streaming: FAIL")
+                    tool_probe = client.complete(ChatRequest([{"role": "user", "content": "Call the supplied tool once if tool calling is supported."}],
+                        tools=[{"type":"function","function":{"name":"doctor_probe","description":"diagnostic no-op","parameters":{"type":"object","properties":{}}}}], max_tokens=32))
+                    print("tool_calling: OK" if tool_probe.tool_calls else "tool_calling: WARN (provider returned no tool call)")
+                    try:
+                        obj = client.complete_json([{"role":"user","content":"Return JSON object {\"ok\":true}."}], {"type":"object","required":["ok"],"properties":{"ok":{"type":"boolean"}}}, max_attempts=1)
+                        print("structured_output: OK" if obj.get("ok") is True else "structured_output: FAIL")
+                    except Exception as exc:
+                        print("structured_output: FAIL", DLPPolicy().scanner.redact(str(exc)))
+                        ok = False
                 finally:
                     client.close()
-                print("llm: OK")
             except Exception as exc:
-                print("llm: FAIL", DLPPolicy().scanner.redact(str(exc)))
+                safe = DLPPolicy().scanner.redact(str(exc))
+                print("llm: FAIL", safe)
+                print("streaming: FAIL")
+                print("tool_calling: FAIL")
+                print("structured_output: FAIL")
                 ok = False
         return 0 if ok else 2
     return None

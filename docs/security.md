@@ -4,7 +4,7 @@
 
 `localagent` is an application-level security boundary for an autonomous LLM agent in a closed corporate contour. It is designed to prevent an LLM or agent-controlled tool call from escaping the configured workspace, acquiring undeclared capabilities, or forwarding credential-like data to downstream sinks.
 
-**Python-level hardening is not an OS sandbox.** The project does not use or require Docker, seccomp, AppArmor, SELinux, bubblewrap, root/admin helpers, or another mandatory OS isolation layer. OS/user/network isolation remains a deployment responsibility.
+Python policy is complemented by an optional Linux kernel execution sandbox. `exec.isolation=kernel` requires Landlock, seccomp and an isolated network namespace; `best_effort` uses whatever kernel layers are available and `app` is explicitly weaker. For hosts where kernel layers cannot be used, `scripts/install-system.sh` provides the required OS deployment boundary: a dedicated non-login account and a root-owned read-only virtualenv.
 
 ## Security invariants
 
@@ -29,7 +29,7 @@ This rejects `../`, outside absolute paths, symlink/junction escapes, and contro
 
 Execution is disabled unless `exec.enabled=true`.
 
-The only execution capability is `run_tests`, and its boundary is intentionally narrow:
+Execution is typed rather than a generic shell. The available capabilities are `run_script`, `run_module`, and `run_tests`, each with a separate allowlisted target grammar:
 
 - fixed executable identity equal to the canonical `sys.executable` path;
 - fixed `python -m pytest` entrypoint;
@@ -38,8 +38,10 @@ The only execution capability is `run_tests`, and its boundary is intentionally 
 - targets must be relative paths under `tests/`;
 - cwd is exactly the workspace;
 - environment contains only `PATH`, `PYTEST_DISABLE_PLUGIN_AUTOLOAD`, and `PYTHONNOUSERSITE`;
-- the Python test surface is snapshotted at tool construction and must not change before execution;
-- symlinks in the execution surface must remain inside the workspace.
+- `run_script` is limited to `scratch/`, `scripts/`, `src/`, and `tests/`;
+- `run_module` uses `python -m` and resolves modules only under `src/`;
+- `run_tests` accepts only `tests/` targets and emits JUnit XML into `scratch/`;
+- all execution uses the configured trusted interpreter, no shell, and an allowlisted environment.
 
 The trusted-surface rule matters because pytest can execute Python before a target test body through `conftest.py`, plugins, fixtures, imports, hooks, or module-level code. A newly created or modified Python file therefore does not become executable merely because it appears under `tests/`.
 
@@ -55,7 +57,7 @@ Role ACLs are intersected with global policy and, for children, with the already
 
 ### DLP
 
-`SecretScanner` is the authoritative detector. `SecretScanner.redact()` is the corresponding durable/user-visible redaction primitive. `DLPPolicy.check()` turns a scan into an allow/block decision without returning sensitive material.
+`SecretScanner` is the authoritative detector. `SecretScanner.redact()` is the corresponding durable/user-visible redaction primitive. `DLPPolicy` has three explicit tiers: `allow` for clean content, `mask` for durable/user-visible sinks (with recursive redaction), and `block` for execution, write, tool-argument and network boundaries. The scanner is authoritative and never returns secret content to a caller.
 
 The same detector is used across these boundaries:
 

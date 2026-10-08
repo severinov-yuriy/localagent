@@ -75,4 +75,4 @@ A path is authorized and scanned before its contents enter the database. Inline 
 
 ## Capability model
 
-There is intentionally no generic command runner. The absence of a capability from the registry is part of the security model, not a UI limitation.
+There is intentionally no generic command runner. `run_script`, `run_module`, and `run_tests` are typed execution capabilities; the absence of a shell/generic command tool is part of the security model, not a UI limitation.
