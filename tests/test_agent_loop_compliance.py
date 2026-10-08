@@ -201,8 +201,6 @@ def test_unsupported_effort_raises(workspace, cfg, ui, fake_llm):
 
 def test_sigint_saves_state_and_stops(workspace, cfg, ui, fake_llm):
     """Двойной SIGINT: первый останавливает шаг, второй завершает. Сессия сохранена."""
-    import os
-    import signal as _s
     llm = fake_llm([LLMResponse(text="x", finish_reason="stop")])
     agent = Agent(cfg, llm, build_tools(cfg), ui)
     agent._interrupt()

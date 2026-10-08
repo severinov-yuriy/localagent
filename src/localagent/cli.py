@@ -175,7 +175,9 @@ def _handle_simple_commands(args, cfg):
         print(f"restored {restored} file(s) from session {Path(session).name}")
         return 0
     if args.cmd == "doctor":
-        import importlib.util, sqlite3, ssl, sys
+        import importlib.util
+        import sqlite3
+        import ssl
         workspace = Path(args.workspace)
         checks = [
             ("config", True),

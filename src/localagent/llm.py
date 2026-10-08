@@ -129,22 +129,22 @@ class OpenAICompatClient:
         """Create an HTTP client using API-key, TLS, proxy, timeout, and retry settings from ``cfg``."""
         self.cfg = cfg
         self.ui = ui
-        l = cfg["llm"]
-        key = os.getenv(l.get("api_key_env", ""), "") if l.get("api_key_env") else ""
-        if not key and l.get("api_key_file"):
-            key = Path(l["api_key_file"]).expanduser().read_text(encoding="utf-8").strip()
-        verify = l.get("ca_bundle") or l.get("verify_ssl", True)
+        llm_cfg = cfg["llm"]
+        key = os.getenv(llm_cfg.get("api_key_env", ""), "") if llm_cfg.get("api_key_env") else ""
+        if not key and llm_cfg.get("api_key_file"):
+            key = Path(llm_cfg["api_key_file"]).expanduser().read_text(encoding="utf-8").strip()
+        verify = llm_cfg.get("ca_bundle") or llm_cfg.get("verify_ssl", True)
         headers = {"Authorization": f"Bearer {key}"} if key else {}
-        if l.get("http_referer"):
-            headers["HTTP-Referer"] = l["http_referer"]
-        if l.get("x_title"):
-            headers["X-Title"] = l["x_title"]
+        if llm_cfg.get("http_referer"):
+            headers["HTTP-Referer"] = llm_cfg["http_referer"]
+        if llm_cfg.get("x_title"):
+            headers["X-Title"] = llm_cfg["x_title"]
         self._deadline = None
         self.client = httpx.Client(
             verify=verify,
             headers=headers,
-            timeout=httpx.Timeout(l["idle_timeout_s"], connect=l["connect_timeout_s"]),
-            proxy=l.get("proxy"),
+            timeout=httpx.Timeout(llm_cfg["idle_timeout_s"], connect=llm_cfg["connect_timeout_s"]),
+            proxy=llm_cfg.get("proxy"),
             trust_env=True,
         )
 

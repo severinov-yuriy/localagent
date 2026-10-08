@@ -63,8 +63,13 @@ BPF_K = 0x00
 BPF_RET = 0x06
 BPF_ALU = 0x04
 BPF_AND = 0x50
-BPF_STMT = lambda code, k: (code, 0, 0, k)
-BPF_JUMP = lambda code, k, jt, jf: (code, jt, jf, k)
+
+def BPF_STMT(code, k):
+    return (code, 0, 0, k)
+
+
+def BPF_JUMP(code, k, jt, jf):
+    return (code, jt, jf, k)
 
 SECCOMP_RET_KILL_PROCESS = 0x80000000
 SECCOMP_RET_ERRNO = 0x00050000

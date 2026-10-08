@@ -71,7 +71,6 @@ def check_file(path: str | Path, workspace: str | Path) -> list[str]:
 def check_targets(paths: list[str], workspace: str | Path) -> list[str]:
     findings = []
     root = Path(workspace).resolve()
-    roots = {root / "src", root / "tests", root / "scripts", root / "scratch"}
     for raw in paths:
         p = Path(raw)
         if not p.is_absolute():

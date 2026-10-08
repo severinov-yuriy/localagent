@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 
 import pytest
-import json
 
 from localagent.agent import Agent
 from localagent.llm import LLMResponse, ToolCall

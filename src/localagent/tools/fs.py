@@ -49,7 +49,6 @@ class ReadFile(FS):
         except UnicodeDecodeError:
             try:
                 text = data.decode("cp1251")
-                encoding = "cp1251"
             except UnicodeDecodeError as e:
                 raise ValueError("unsupported text encoding") from e
         if not self.dlp.check("filesystem.read_file", text).allowed:

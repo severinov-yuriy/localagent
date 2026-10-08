@@ -61,7 +61,7 @@ def test_required_event_types_present(workspace, cfg, ui, fake_llm):
     agent = Agent(cfg, llm, build_tools(cfg), ui)
     agent.run("read")
     path = next((workspace / ".agent" / "logs").rglob(f"{agent.session_id}.jsonl"))
-    types = {json.loads(l)["type"] for l in path.read_text(encoding="utf-8").splitlines()}
+    types = {json.loads(line)["type"] for line in path.read_text(encoding="utf-8").splitlines()}
     for t in ("session_start", "llm_request", "llm_response", "tool_call",
               "tool_result", "session_end"):
         assert t in types, f"missing {t}"
