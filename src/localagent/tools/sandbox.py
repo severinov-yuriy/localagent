@@ -234,7 +234,7 @@ def _add_path_rule(fd: int, path: Path, access: int) -> None:
         os.close(parent)
 
 
-def apply_landlock(workspace: Path, scratch: Path, trusted_executable: Path) -> None:
+def apply_landlock(workspace: Path, scratch: Path, trusted_executable: Path, rw_dirs=None, ro_paths=None) -> None:
     """Restrict filesystem access to workspace + trusted runtime trees.
 
     The absence of a rule means all handled filesystem rights are denied.
@@ -258,8 +258,24 @@ def apply_landlock(workspace: Path, scratch: Path, trusted_executable: Path) -> 
         writable |= LANDLOCK_ACCESS_FS_REFER
     if abi >= 3:
         writable |= LANDLOCK_ACCESS_FS_TRUNCATE
-    _add_path_rule(ruleset, workspace, writable)
-    _add_path_rule(ruleset, scratch, writable)
+    # Workspace is read-only by default. Only explicit work-zone directories
+    # receive write/create/delete rights.
+    _add_path_rule(ruleset, workspace, LANDLOCK_READ_ONLY_FS)
+    rw_dirs = list(rw_dirs or ("src", "tests", "scripts", "scratch", "data", "docs"))
+    for rel in rw_dirs:
+        candidate = Path(rel)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            raise RuntimeError(f"invalid rw_dirs entry: {rel}")
+        target = (workspace / candidate).resolve(strict=False)
+        if target.exists() and target.is_dir():
+            _add_path_rule(ruleset, target, writable)
+    if scratch.exists():
+        _add_path_rule(ruleset, scratch, writable)
+    for rel in (ro_paths or ()):
+        candidate = Path(rel)
+        target = candidate if candidate.is_absolute() else workspace / candidate
+        if target.exists():
+            _add_path_rule(ruleset, target.resolve(strict=True), LANDLOCK_READ_ONLY_FS)
 
     # Permit the trusted interpreter and its read-only runtime tree.  This is
     # intentionally narrower than granting all of /home; a venv under /home

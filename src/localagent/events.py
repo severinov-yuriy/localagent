@@ -5,6 +5,7 @@ from pathlib import Path
 import datetime
 import json
 import uuid
+import hashlib
 from typing import Any
 
 from .security import SecretScanner
@@ -54,6 +55,7 @@ class EventLog:
         self.keys = [str(x).lower() for x in (redact_keys or [])]
         self.seq = 0
         self.step = 0
+        self._prev_hash = "0" * 64
 
     def _redact(self, value: Any) -> Any:
         return redact_and_bound(value, self.keys)
@@ -76,7 +78,33 @@ class EventLog:
             "step": self.step,
             "type": event,
             "data": self._redact(data),
+            "prev_hash": self._prev_hash,
         }
+        canonical = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        row["hash"] = hashlib.sha256((self._prev_hash + canonical).encode("utf-8")).hexdigest()
+        self._prev_hash = row["hash"]
         with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n")
             handle.flush()
+
+    @staticmethod
+    def verify(path: str | Path) -> tuple[bool, str]:
+        """Verify the per-line hash chain and sequence numbers."""
+        previous = "0" * 64
+        expected_seq = 1
+        try:
+            with Path(path).open("r", encoding="utf-8") as handle:
+                for lineno, line in enumerate(handle, 1):
+                    row = json.loads(line)
+                    if row.get("seq") != expected_seq or row.get("prev_hash") != previous:
+                        return False, f"chain break at line {lineno}"
+                    supplied = row.pop("hash", None)
+                    canonical = json.dumps(row, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                    actual = hashlib.sha256((previous + canonical).encode("utf-8")).hexdigest()
+                    if supplied != actual:
+                        return False, f"hash mismatch at line {lineno}"
+                    previous = supplied
+                    expected_seq += 1
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return False, f"invalid journal: {exc}"
+        return True, "ok"

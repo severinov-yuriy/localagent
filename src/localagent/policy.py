@@ -29,7 +29,7 @@ class FilesystemPolicy:
         ".agent/reports",
         ".agent/logs",
     )
-    _DEFAULT_CONTROL_PLANE = ("AGENTS.md", "agents", "agents/**", ".agent/config.yaml", ".agent/config.yml")
+    _DEFAULT_CONTROL_PLANE = ("AGENTS.md", "agents", "agents/**", "skills", "skills/**", ".pi", ".pi/**", ".agent", ".agent/**")
     _PROTECTED_AGENT_PATHS = (".agent", ".agent.*")
     _PROTECTED_PI_PATHS = (".pi", ".pi.*")
 
@@ -77,25 +77,20 @@ class FilesystemPolicy:
         if actor == "runtime" and (operation == "backup" or internal_runtime):
             return False
         if actor != "runtime":
-            if SecretScanner.filename_blocked(real.name):
-                return True
-            if self._matches(real, self._PROTECTED_AGENT_PATHS):
-                return True
-            try:
-                relative = real.relative_to(self.root).as_posix()
-            except ValueError:
-                relative = ""
-            if self._matches(real, self._PROTECTED_PI_PATHS) and not (
-                operation in self.READ_OPS and relative.startswith(".pi/skills/")
-            ):
-                return True
+            if operation in self.WRITE_OPS:
+                if SecretScanner.filename_blocked(real.name):
+                    return True
+                if self._matches(real, self._PROTECTED_AGENT_PATHS):
+                    return True
+                if self._matches(real, self._PROTECTED_PI_PATHS):
+                    return True
         if self._matches(real, perms.get("deny_patterns", [])):
             return True
         if self._matches(real, perms.get("deny", [])):
             return True
         if actor != "runtime":
             control = perms.get("control_plane", list(self._DEFAULT_CONTROL_PLANE))
-            if self._matches(real, control):
+            if operation in self.WRITE_OPS and self._matches(real, control):
                 return True
             if operation in self.WRITE_OPS:
                 control_write = perms.get("control_plane_write", ())

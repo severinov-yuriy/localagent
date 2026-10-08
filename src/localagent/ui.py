@@ -13,6 +13,12 @@ class UI:
         self.streamed = True
         print(s, end="", flush=True)
 
+    def stream_reasoning(self, s):
+        """Render reasoning separately from user-visible answer text."""
+        import sys
+        if s:
+            print(s, end="", flush=True, file=sys.stderr)
+
     def print_final(self, s):
         """Print a final response, adding a newline after streamed output."""
         if self.streamed:

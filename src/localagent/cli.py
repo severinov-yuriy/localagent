@@ -89,7 +89,7 @@ def _build_parser():
     _add_workspace(skills)
 
     logs = sub.add_parser("logs")
-    logs.add_argument("action", choices=["list", "show", "tail", "export", "prune"], default="list", nargs="?")
+    logs.add_argument("action", choices=["list", "show", "tail", "export", "prune", "verify"], default="list", nargs="?")
     logs.add_argument("--session")
     logs.add_argument("--n", type=int, default=50)
     logs.add_argument("--output")
@@ -149,8 +149,8 @@ def _handle_simple_commands(args, cfg):
         checks = [
             ("config", True),
             ("workspace", Path(args.workspace).is_dir()),
-            ("agent_dir", (Path(args.workspace) / "agents").is_dir()),
-            ("skills_dir", (Path(args.workspace) / "skills").is_dir()),
+            ("agent_dir", not (Path(args.workspace) / "agents").exists() or (Path(args.workspace) / "agents").is_dir()),
+            ("skills_dir", not (Path(args.workspace) / "skills").exists() or (Path(args.workspace) / "skills").is_dir()),
         ]
         ok = True
         for name, value in checks:
@@ -161,7 +161,15 @@ def _handle_simple_commands(args, cfg):
             backend = backend_status()
             for name in ("landlock", "seccomp", "network", "ready"):
                 print(f'exec.{name}: {"OK" if backend[name] else "FAIL"}')
-            ok = ok and backend["ready"]
+            isolation = cfg["exec"].get("isolation", "best_effort")
+            if isolation == "app":
+                ready = True
+            elif isolation == "best_effort":
+                ready = any(backend[name] for name in ("landlock", "seccomp", "network"))
+            else:
+                ready = backend["ready"]
+            print(f"exec.isolation: {isolation}")
+            ok = ok and ready
         if args.live:
             try:
                 client = OpenAICompatClient(cfg)
@@ -194,6 +202,11 @@ def _handle_logs(args, cfg):
     if args.action == "list":
         print("\n".join(map(str, paths)))
         return 0
+    if args.action == "verify":
+        from .events import EventLog
+        ok, message = EventLog.verify(paths[0])
+        print(message)
+        return 0 if ok else 2
     if args.session:
         paths = [path for path in paths if path.stem == args.session]
     if not paths:
@@ -302,8 +315,18 @@ def main(argv=None):
             if message.strip():
                 agent.run(message)
     else:
-        agent.run(_expand_at_files(args.prompt, args.workspace))
-    return 0
+        try:
+            result = agent.run(_expand_at_files(args.prompt, args.workspace))
+        except KeyboardInterrupt:
+            return 130
+        except RuntimeError as exc:
+            print(DLPPolicy().scanner.redact(str(exc)), file=sys.stderr)
+            return 3 if agent.terminal_status == "limit_reached" else 1
+        if result.status == "limit_reached":
+            return 3
+        if result.status == "interrupted":
+            return 130
+        return 0 if result.status == "ok" else 1
 
 
 if __name__ == "__main__":

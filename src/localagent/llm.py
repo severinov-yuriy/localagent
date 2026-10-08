@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import ConfigError
+from .security import SecretScanner
 from typing import Any
 
 import httpx
@@ -245,7 +246,18 @@ class OpenAICompatClient:
                             obj = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+                        before_text = acc.text
+                        before_reasoning = acc.reasoning
                         acc.add_chunk(obj)
+                        text_delta = acc.text[len(before_text):]
+                        reasoning_delta = acc.reasoning[len(before_reasoning):]
+                        if self.ui:
+                            if text_delta and not SecretScanner.scan(text_delta):
+                                self.ui.stream_text(text_delta)
+                            if reasoning_delta and not SecretScanner.scan(reasoning_delta):
+                                stream_reasoning = getattr(self.ui, "stream_reasoning", None)
+                                if stream_reasoning:
+                                    stream_reasoning(reasoning_delta)
                     result = acc.result(streamed=True)
                     # Some OpenAI-compatible gateways close a successful SSE
                     # stream without a [DONE] sentinel. A finish_reason is
@@ -253,10 +265,6 @@ class OpenAICompatClient:
                     if not done and not result.finish_reason:
                         raise TimeoutError("incomplete SSE stream")
                 result = acc.result(streamed=True)
-                # Only now is the logical attempt complete; failed attempts never
-                # touch the UI, so a retry cannot duplicate partial output.
-                if self.ui and result.text:
-                    self.ui.stream_text(result.text)
                 return result
             except (httpx.TransportError, httpx.TimeoutException, TimeoutError) as e:
                 last_error = e

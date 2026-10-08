@@ -53,6 +53,14 @@ class SecretScanner:
         r"^data:[^;,\s]+;base64,(?P<payload>[A-Za-z0-9+/=\r\n]+)$", re.I | re.S
     )
     REDACTED: ClassVar[str] = "[REDACTED]"
+    _PLACEHOLDERS: ClassVar[tuple[str, ...]] = (
+        "changeme", "change_me", "your_", "your-", "example", "placeholder",
+        "dummy", "test", "fake", "sample", "<token>", "<secret>", "<password>",
+    )
+    _SECRET_CONTEXT_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"(?i)(?:api[_-]?key|access[_-]?key|secret|token|password|credential|authorization|"
+        r"private[_-]?key|bearer|\.env|pem|BEGIN [A-Z ]*PRIVATE KEY)"
+    )
 
     @classmethod
     def filename_blocked(cls, name: str) -> bool:
@@ -76,6 +84,8 @@ class SecretScanner:
             return None
         if not isinstance(value, str):
             return None
+        if cls.REDACTED in value:
+            return "redacted_content"
 
         data_url = cls._data_url_re.fullmatch(value.strip())
         if data_url:
@@ -123,12 +133,19 @@ class SecretScanner:
     @classmethod
     def _scan_text(cls, value: str) -> str | None:
         for category, pattern in cls._patterns:
-            if pattern.search(value):
+            match = pattern.search(value)
+            if match:
+                matched = match.group(0).lower()
+                if any(marker in matched for marker in cls._PLACEHOLDERS):
+                    continue
                 return category
-        for token in re.findall(r"\b[A-Za-z0-9_-]{32,}\b", value):
-            if len(set(token)) >= 10:
-                entropy = _entropy(token)
-                if entropy >= 4.0:
+        # Entropy alone is too noisy for source code, hashes, fixtures and IDs.
+        # Only apply it in an explicit secret-bearing context.
+        if cls._SECRET_CONTEXT_RE.search(value):
+            for token in re.findall(r"\b[A-Za-z0-9_-]{32,}\b", value):
+                if len(set(token)) < 10:
+                    continue
+                if _entropy(token) >= 4.0 and not any(marker in token.lower() for marker in cls._PLACEHOLDERS):
                     return "high_entropy_token"
         return None
 

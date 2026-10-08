@@ -29,12 +29,6 @@ def _limits(spec: dict) -> None:
     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
     resource.setrlimit(resource.RLIMIT_FSIZE, (fsize, fsize))
     resource.setrlimit(resource.RLIMIT_NOFILE, (nofile, nofile))
-    if hasattr(resource, "RLIMIT_AS"):
-        address_space = int(spec.get("as_bytes", 2 * 1024 * 1024 * 1024))
-        resource.setrlimit(resource.RLIMIT_AS, (address_space, address_space))
-    if hasattr(resource, "RLIMIT_NPROC"):
-        nproc = int(spec.get("nproc", 128))
-        resource.setrlimit(resource.RLIMIT_NPROC, (nproc, nproc))
     if hasattr(resource, "RLIMIT_CORE"):
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
 
@@ -62,13 +56,21 @@ def main() -> int:
     try:
         _pdeathsig()
         _limits(spec)
-        # Network isolation is established before filesystem/seccomp policy.
-        setup_network_namespace()
-        # Filesystem isolation is mandatory before target code starts.
-        apply_landlock(workspace, scratch, trusted)
-        # Seccomp is installed last because launcher setup may require syscalls
-        # which must not remain available to the target.
-        apply_seccomp()
+        mode = spec.get("isolation", "best_effort")
+        layers = set(spec.get("layers", []))
+        if mode in {"kernel", "best_effort"}:
+            if "network" in layers:
+                setup_network_namespace()
+            if "landlock" in layers:
+                apply_landlock(
+                    workspace, scratch, trusted,
+                    rw_dirs=spec.get("rw_dirs"),
+                    ro_paths=spec.get("ro_paths"),
+                )
+            if "seccomp" in layers:
+                apply_seccomp()
+            if mode == "kernel" and layers != {"network", "landlock", "seccomp"}:
+                raise RuntimeError("kernel isolation requested but required layers are unavailable")
         os.chdir(workspace)
         os.execve(str(trusted), [str(x) for x in argv], env)
     except (OSError, RuntimeError, ValueError) as exc:

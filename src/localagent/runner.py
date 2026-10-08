@@ -11,6 +11,7 @@ from .knowledge import KnowledgeBase
 from .policy import FilesystemPolicy, Policy
 from .security import DLPPolicy
 from .tools.exec import RunModule, RunScript, RunTests
+from .tools.syntax import CheckSyntax
 from .tools.fs import ApplyPatch, Delete, EditFile, Glob, Grep, ListDir, MakeDir, Move, ReadFile, Undo, ViewImage, WriteFile
 from .tools.kb import KBAdd, KBRead, KBSearch, ReadSkill
 from .tools.meta import AskUser, Finish, Todo
@@ -25,7 +26,7 @@ def build_tools(cfg, subagent_runner=None, policy=None, allowed_tool_names=None)
     kb = KnowledgeBase(root / cfg["kb"]["path"], cfg["kb"]["chunk_chars"], policy=p)
     skill_roots = [x for x in (root / "skills", root / ".pi" / "skills") if x.is_dir()]
     ts = [
-        ReadFile(p, dlp), ListDir(p, dlp), Glob(p, dlp), Grep(p, dlp), WriteFile(p, dlp), EditFile(p, dlp),
+        ReadFile(p, dlp), CheckSyntax(p), ListDir(p, dlp), Glob(p, dlp), Grep(p, dlp), WriteFile(p, dlp), EditFile(p, dlp),
         ApplyPatch(p, dlp), MakeDir(p, dlp), Move(p, dlp), Delete(p, dlp), Undo(p, dlp), ViewImage(p, dlp),
         Finish(), Todo(), AskUser(), ReadSkill(skill_roots, p, dlp), KBSearch(kb, dlp), KBRead(kb, p, dlp), KBAdd(kb, p, dlp),
     ]
@@ -33,7 +34,7 @@ def build_tools(cfg, subagent_runner=None, policy=None, allowed_tool_names=None)
     exec_mode = exec_cfg.get("mode", "off")
     if exec_mode != "off" or exec_cfg.get("enabled", False):
         ts.extend([RunScript(cfg, p, dlp), RunTests(cfg, p, dlp)])
-        if exec_cfg.get("allow_module", False):
+        if exec_cfg.get("allow_module", True):
             ts.append(RunModule(cfg, p, dlp))
     if subagent_runner:
         ts.append(SpawnAgent(subagent_runner))

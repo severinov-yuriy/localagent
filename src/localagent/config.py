@@ -88,8 +88,11 @@ DEFAULTS = {
         "allow_delete": False,
         "confirm": "ask",
         "deny": [],
-        "control_plane": ["AGENTS.md", "agents", "agents/**", ".agent/config.yaml", ".agent/config.yml"],
-        "control_plane_write": ["src/**", "scripts/**", "tests/**", "tests/conftest.py", "tests/**/conftest.py", "tests/__init__.py", "tests/**/__init__.py"],
+        "control_plane": ["AGENTS.md", "agents", "agents/**", "skills", "skills/**", ".pi", ".pi/**", ".agent", ".agent/**"],
+        # Empty by default: application source/tests/scripts are work-zone writable.
+        # Global administrators may explicitly add protected paths, but workspace config
+        # is never allowed to remove them.
+        "control_plane_write": [],
         "deny_patterns": [
             ".env*", "*.pem", "*.key", "id_rsa*", "credentials*", "secrets*",
             ".agent", ".agent.*", "*.agent.bak", "*.tmp-*",
@@ -102,15 +105,14 @@ DEFAULTS = {
     "exec": {
         "mode": "off",
         "enabled": False,  # legacy compatibility; runtime uses mode
+        "isolation": "best_effort",
         "timeout_s": 120,
         "output_limit": 12000,
         "python": None,
         "cpu_s": 120,
         "fsize_bytes": 50_000_000,
         "nofile": 4096,
-        "as_bytes": 2 * 1024 * 1024 * 1024,
-        "nproc": 128,
-        "allow_module": False,
+        "allow_module": True,
         "pythonpath": [],
         "java_home": None,
         "spark_home": None,
@@ -144,12 +146,12 @@ def merge(a, b):
 
 def _env(d):
     """Apply only operator-safe environment overrides. Execution is config-file-only."""
-    blocked_roots = {"exec"}
+    blocked_roots = {"exec", "config"}
     for k, v in os.environ.items():
         if not k.startswith("LOCALAGENT_"):
             continue
         parts = k[len("LOCALAGENT_"):].lower().split("__")
-        if not parts or parts[0] in blocked_roots:
+        if not parts or parts[0] in blocked_roots or k == "LOCALAGENT_CONFIG":
             continue
         cur = d
         for p in parts[:-1]:
@@ -350,7 +352,7 @@ def validate(c):
             raise ConfigError(f"permissions.{key} must be >= 1")
 
     execution = c["exec"]
-    _keys(execution, {"mode", "enabled", "timeout_s", "output_limit", "python", "cpu_s", "fsize_bytes", "nofile", "as_bytes", "nproc", "allow_module", "pythonpath", "java_home", "spark_home"}, "exec")
+    _keys(execution, {"mode", "enabled", "timeout_s", "output_limit", "python", "cpu_s", "fsize_bytes", "nofile", "as_bytes", "nproc", "allow_module", "pythonpath", "java_home", "spark_home", "isolation", "rw_dirs", "ro_paths"}, "exec")
     if not isinstance(execution.get("enabled", False), bool):
         raise ConfigError("exec.enabled must be boolean")
     if not isinstance(execution.get("allow_module", False), bool):
@@ -361,8 +363,14 @@ def validate(c):
         if execution.get(key) is not None and (not isinstance(execution[key], str) or not execution[key]):
             raise ConfigError(f"exec.{key} must be a non-empty string or null")
     for key in ("as_bytes", "nproc"):
-        if not isinstance(execution[key], int) or execution[key] < 1:
+        if key in execution and (not isinstance(execution[key], int) or execution[key] < 1):
             raise ConfigError(f"exec.{key} must be >= 1")
+    isolation = execution.get("isolation", "best_effort")
+    if isolation not in {"kernel", "best_effort", "app"}:
+        raise ConfigError("exec.isolation must be kernel|best_effort|app")
+    for key in ("rw_dirs", "ro_paths"):
+        if key in execution and (not isinstance(execution[key], list) or not all(isinstance(x, str) and x for x in execution[key])):
+            raise ConfigError(f"exec.{key} must be a list of non-empty strings")
     if execution.get("mode", "off") not in {"off", "ask", "auto"}:
         raise ConfigError("exec.mode must be off|ask|auto")
     if not _is_number(execution["timeout_s"]) or execution["timeout_s"] <= 0:
@@ -443,7 +451,18 @@ def load_config(workspace=".", cli=None):
                                                    "deny_patterns", "deny", "control_plane", "control_plane_write",
                                                    "backup", "max_file_bytes", "max_read_bytes", "max_changes"},
                           "workspace permissions")
-                for section in ("exec", "llm", "logging", "kb", "permissions"):
+                    # Workspace config may only add protected paths; it cannot remove
+                    # administrator-controlled control-plane protections.
+                    workspace_perms = source["permissions"]
+                    source["permissions"] = {
+                        "control_plane": list(dict.fromkeys(
+                            data["permissions"]["control_plane"] + workspace_perms.get("control_plane", [])
+                        )),
+                        "control_plane_write": list(dict.fromkeys(
+                            data["permissions"]["control_plane_write"] + workspace_perms.get("control_plane_write", [])
+                        )),
+                    }
+                for section in ("exec", "llm", "logging", "kb"):
                     source.pop(section, None)
             else:
                 try:

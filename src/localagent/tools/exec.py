@@ -7,6 +7,7 @@ import signal
 import subprocess
 import sys
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -68,7 +69,7 @@ class ExecutionPolicy:
         return [str(self._trusted_executable), str(target), *args]
 
     def module_argv(self, module, args):
-        if not self.cfg.get("exec", {}).get("allow_module", False):
+        if not self.cfg.get("exec", {}).get("allow_module", True):
             raise PermissionError("run_module is disabled by exec.allow_module=false")
         if not isinstance(args, list) or not all(isinstance(x, str) for x in args):
             raise ValueError("args must be a list of strings")
@@ -101,7 +102,12 @@ class ExecutionPolicy:
         for target in targets or ["tests"]:
             self._path(target, ("tests",), must_file=False)
             out.append(target)
-        return [str(self._trusted_executable), "-m", "pytest", *out]
+        return [
+            str(self._trusted_executable), "-m", "pytest",
+            "-p", "no:cacheprovider",
+            "--junitxml=scratch/pytest-results.xml",
+            *out,
+        ]
 
     def _configured_path(self, key):
         value = self.cfg.get("exec", {}).get(key)
@@ -198,13 +204,20 @@ class Exec(Tool):
             mode = "auto"
         if mode == "off":
             raise PermissionError("execution disabled by exec.mode=off")
+        if mode not in {"auto", "on"}:
+            raise PermissionError("invalid exec.mode")
+        isolation = self.cfg["exec"].get("isolation", "best_effort")
+        if isolation not in {"kernel", "best_effort", "app"}:
+            raise PermissionError("invalid exec.isolation")
         status = self.execution_policy.backend_status()
-        if not status["ready"]:
-            raise PermissionError("execution sandbox is unavailable; Landlock and seccomp are required")
-        return mode
+        if isolation == "kernel" and not status["ready"]:
+            raise PermissionError("kernel isolation requires Landlock, seccomp and network isolation")
+        if isolation == "best_effort" and not (status["landlock"] or status["seccomp"] or status["network"]):
+            raise PermissionError("best_effort isolation has no available kernel layer; use app explicitly")
+        return isolation, status
 
     def _run(self, operation, argv, timeout):
-        self._enabled()
+        mode, status = self._enabled()
         scratch = self.p.root.joinpath("scratch")
         scratch.mkdir(exist_ok=True)
         env = self.execution_policy.env()
@@ -219,9 +232,17 @@ class Exec(Tool):
             "cpu_s": int(self.cfg["exec"].get("cpu_s", 120)),
             "fsize_bytes": int(self.cfg["exec"].get("fsize_bytes", 50_000_000)),
             "nofile": int(self.cfg["exec"].get("nofile", 4096)),
-            "as_bytes": int(self.cfg["exec"].get("as_bytes", 2 * 1024 * 1024 * 1024)),
-            "nproc": int(self.cfg["exec"].get("nproc", 128)),
+            "isolation": mode,
+            "layers": [name for name, available in status.items() if name in {"landlock", "seccomp", "network"} and available],
+            "rw_dirs": self.cfg["exec"].get("rw_dirs", ["src", "tests", "scripts", "scratch", "data", "docs"]),
+            "ro_paths": self.cfg["exec"].get("ro_paths", ["AGENTS.md", "agents", "skills", ".pi", ".agent"]),
         }
+        if mode == "app":
+            from .preflight import check_targets
+            targets = [str(x) for x in argv[1:] if str(x).endswith(".py")]
+            findings = check_targets(targets, self.p.root)
+            if findings:
+                raise PermissionError("preflight blocked execution: " + "; ".join(findings[:8]))
         launcher_argv = [str(self.execution_policy._trusted_executable), str(self.execution_policy._launcher)]
         launcher_env = {"LOCALAGENT_LAUNCH_SPEC": json.dumps(spec, separators=(",", ":"))}
         started = time.monotonic()
@@ -269,7 +290,7 @@ class RunScript(Exec):
 
 class RunModule(Exec):
     name = "run_module"
-    description = "Run an existing Python module under src/; disabled unless explicitly enabled by admin config."
+    description = "Run an existing Python module under src/."
     def run(self, a):
         argv = self.execution_policy.module_argv(a["module"], a.get("args", []))
         r = self._run("run_module", argv, self.cfg["exec"].get("timeout_s", 120))
@@ -283,5 +304,19 @@ class RunTests(Exec):
     def run(self, a):
         argv = self.execution_policy.test_argv(a["targets"])
         r = self._run("run_tests", argv, self.cfg["exec"].get("timeout_s", 120))
-        return {"ok": r.returncode == 0 and not r.timed_out and not r.output_blocked,
-                "is_error": r.returncode != 0 or r.timed_out or r.output_blocked, **r.__dict__}
+        payload = {"ok": r.returncode == 0 and not r.timed_out and not r.output_blocked,
+                   "is_error": r.returncode != 0 or r.timed_out or r.output_blocked, **r.__dict__}
+        report = self.p.root / "scratch" / "pytest-results.xml"
+        if report.is_file():
+            try:
+                root = ET.parse(report).getroot()
+                payload["tests"] = {
+                    "passed": max(0, int(root.attrib.get("tests", 0)) - int(root.attrib.get("failures", 0)) - int(root.attrib.get("errors", 0)) - int(root.attrib.get("skipped", 0))),
+                    "failed": int(root.attrib.get("failures", 0)),
+                    "errors": int(root.attrib.get("errors", 0)),
+                    "skipped": int(root.attrib.get("skipped", 0)),
+                    "total": int(root.attrib.get("tests", 0)),
+                }
+            except (OSError, ET.ParseError, ValueError):
+                payload["tests"] = {"parse_error": True}
+        return payload

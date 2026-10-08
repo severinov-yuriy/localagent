@@ -81,6 +81,7 @@ class Agent:
         self._ended = False
         self._oldint = None
         self._signal_installed = False
+        self._pending_tool_calls = {}
 
         root = cfg["permissions"]["workspace_root"]
         self.dlp = DLPPolicy()
@@ -449,8 +450,24 @@ class Agent:
             # audit event above remains the durable terminal indication.
             self.terminal_cleanup_error = str(cleanup_error)
 
+    def _answer_pending_tool_calls(self, reason):
+        if not self._pending_tool_calls:
+            return
+        safe_reason, _ = self._dlp_context("tool.skipped.reason", reason)
+        for call_id, name in list(self._pending_tool_calls.items()):
+            result = {"skipped": True, "is_error": True, "error": safe_reason}
+            self.messages.append({
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(result, ensure_ascii=False),
+                "is_error": True,
+            })
+            self.log.emit("tool_result", step=self.steps, name=name, result=result, skipped=True)
+        self._pending_tool_calls.clear()
+
     def _terminate(self, reason, *, event="limit_reached", status=None):
         safe_reason, _ = self._dlp_context("termination.reason", reason)
+        self._answer_pending_tool_calls("skipped: " + safe_reason)
         self.log.emit(event, reason=safe_reason, step=self.steps)
         terminal = status or ("stuck" if event == "stuck" else "limit_reached")
         self._finalize(terminal, reason=safe_reason)
@@ -468,6 +485,10 @@ class Agent:
         decision = self.dlp.check(operation, value)
         if decision.allowed:
             return value, True
+        try:
+            self.log.emit("dlp_masked", operation=operation, reason=decision.reason, step=self.steps)
+        except Exception:
+            pass
         return "content blocked by security policy", False
 
     def _sanitize_tool_calls_for_context(self, tool_calls):
@@ -537,6 +558,7 @@ class Agent:
                     self._finalize("ok", result=safe_text)
                     return AgentResult(status="ok", summary=safe_text, result=safe_text)
 
+                self._pending_tool_calls = {tc.id: tc.name for tc in r.tool_calls}
                 for tc in r.tool_calls:
                     try:
                         self._limits(deadline)
@@ -614,6 +636,7 @@ class Agent:
                     if isinstance(result, dict) and result.get("is_error"):
                         tool_message["is_error"] = True
                     self.messages.append(tool_message)
+                    self._pending_tool_calls.pop(tc.id, None)
                     self.log.emit("tool_result", step=self.steps, name=tc.name, result=result, permission_denied=permission_denied)
                     if not isinstance(result, dict) or not result.get("is_error"):
                         if tool.get_capabilities() & {FS_WRITE, FS_DELETE, KB_WRITE}:
@@ -639,10 +662,12 @@ class Agent:
                 self.save()
         except KeyboardInterrupt:
             self.stop = True
+            self._answer_pending_tool_calls("skipped: interrupted")
             self._finalize("interrupted", reason="signal")
             raise
         except Exception as exc:  # outer lifecycle boundary preserves unexpected failures
             safe_error, allowed = self._dlp_context("agent.exception", str(exc))
+            self._answer_pending_tool_calls("skipped: " + (safe_error if allowed else "operation failed"))
             if not self._ended:
                 self._finalize("failed", reason=safe_error if allowed else "operation failed: content blocked by security policy")
             if allowed:
