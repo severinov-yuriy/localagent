@@ -160,8 +160,13 @@ def landlock_abi() -> int:
         return 0
     try:
         libc = _libc()
-        attr = _LandlockRulesetAttr()
-        return int(_syscall(libc, SYS_LANDLOCK_CREATE_RULESET, ctypes.byref(attr), ctypes.sizeof(attr), LANDLOCK_CREATE_RULESET_VERSION))
+        return int(_syscall(
+            libc,
+            SYS_LANDLOCK_CREATE_RULESET,
+            None,
+            0,
+            LANDLOCK_CREATE_RULESET_VERSION,
+        ))
     except (OSError, AttributeError):
         return 0
 
@@ -216,17 +221,17 @@ def setup_network_namespace() -> None:
 def userns_network_supported() -> bool:
     if not sys_is_linux() or not hasattr(_libc(), "unshare"):
         return False
-    # This is intentionally conservative. The launcher performs the real
-    # unshare and still fails closed if the host/container rejects it.
-    probe = Path("/proc/sys/kernel/unprivileged_userns_clone")
-    if probe.exists():
+    # Probe the actual operation in a short-lived child. Sysctl heuristics are
+    # not portable across kernels/containers and can report false negatives.
+    pid = os.fork()
+    if pid == 0:
         try:
-            return probe.read_text(encoding="ascii").strip() == "1"
-        except OSError:
-            return False
-    # Some kernels omit this knob (notably when user namespaces are governed
-    # by another policy). Do not claim readiness for an unprivileged process.
-    return os.geteuid() == 0
+            _unshare(CLONE_NEWUSER | CLONE_NEWNET)
+        except (OSError, RuntimeError):
+            os._exit(1)
+        os._exit(0)
+    _, status = os.waitpid(pid, 0)
+    return os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
 
 
 def _add_path_rule(fd: int, path: Path, access: int) -> None:

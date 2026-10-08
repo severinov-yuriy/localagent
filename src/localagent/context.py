@@ -138,7 +138,10 @@ class Context:
                 schema,
             )
             summary = obj.get("summary", "")
-            todos = obj.get("todos", todo_state or [])
+            summarized_todos = obj.get("todos", [])
+            todos = todo_state if todo_state else summarized_todos
+            if not todos:
+                todos = self._extract_todo(text)
             if not self.dlp.check("context.compaction.summary", summary).allowed:
                 summary = "content blocked by security policy"
             if not self.dlp.check("context.compaction.todos", todos).allowed:
@@ -148,8 +151,6 @@ class Context:
             # (for example unsupported response_format) must not break Agent.run.
             summary = text[:8000]
             todos = todo_state or self._extract_todo(text)
-        if todo_state is not None:
-            todos = todo_state
         payload = {"summary": summary, "todo": todos, "current_task": current_task or ""}
         if not self.dlp.check("context.compaction.payload", payload).allowed:
             payload = {"summary": "content blocked by security policy", "todo": [], "current_task": "content blocked by security policy"}

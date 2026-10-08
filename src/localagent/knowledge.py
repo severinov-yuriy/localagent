@@ -23,6 +23,19 @@ class KnowledgeBase:
         self.db.execute('CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(path UNINDEXED, text)')
         self.db.commit()
 
+    def close(self):
+        """Close the SQLite connection explicitly."""
+        if self.db is not None:
+            self.db.close()
+            self.db = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+        return False
+
     def add(self, path, content=None):
         """Index a file or supplied text, replacing any previous entry for ``path``."""
         logical_path = Path(path)

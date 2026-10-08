@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -163,8 +164,9 @@ class OpenAICompatClient:
         if model not in profiles:
             raise ConfigError(f"llm model {model!r} has no validated profile")
         profile = profiles[model]
-        host = (self.cfg["llm"].get("base_url") or "").lower()
-        external = not any(x in host for x in ("127.0.0.1", "localhost", "::1"))
+        base_url = self.cfg["llm"].get("base_url") or ""
+        hostname = (urlparse(base_url).hostname or "").lower()
+        external = hostname not in {"127.0.0.1", "localhost", "::1"}
         if external and not self.cfg["llm"].get("allow_external", False):
             raise ConfigError("external LLM provider is disabled; set llm.allow_external=true in global config")
         b = {
@@ -255,18 +257,12 @@ class OpenAICompatClient:
                             obj = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        before_text = acc.text
-                        before_reasoning = acc.reasoning
                         acc.add_chunk(obj)
-                        text_delta = acc.text[len(before_text):]
-                        reasoning_delta = acc.reasoning[len(before_reasoning):]
-                        if self.ui:
-                            if text_delta and not SecretScanner.scan(text_delta):
-                                self.ui.stream_text(text_delta)
-                            if reasoning_delta and not SecretScanner.scan(reasoning_delta):
-                                stream_reasoning = getattr(self.ui, "stream_reasoning", None)
-                                if stream_reasoning:
-                                    stream_reasoning(reasoning_delta)
+                        # Do not emit individual SSE chunks: a secret can span
+                        # chunk boundaries and therefore evade per-chunk scanning.
+                        # Buffer the logical response and apply DLP to the
+                        # complete text before anything reaches the UI.
+
                     result = acc.result(streamed=True)
                     # Some OpenAI-compatible gateways close a successful SSE
                     # stream without a [DONE] sentinel. A finish_reason is
@@ -274,6 +270,13 @@ class OpenAICompatClient:
                     if not done and not result.finish_reason:
                         raise TimeoutError("incomplete SSE stream")
                 result = acc.result(streamed=True)
+                if self.ui:
+                    if result.text and not SecretScanner.scan(result.text):
+                        self.ui.stream_text(result.text)
+                    if result.reasoning and not SecretScanner.scan(result.reasoning):
+                        stream_reasoning = getattr(self.ui, "stream_reasoning", None)
+                        if stream_reasoning:
+                            stream_reasoning(result.reasoning)
                 return result
             except (httpx.TransportError, httpx.TimeoutException, TimeoutError) as e:
                 last_error = e
