@@ -263,6 +263,9 @@ def _handle_logs(args, cfg):
         return 0
     if args.action == "verify":
         from .events import EventLog
+        if not paths:
+            print("no event logs found")
+            return 2
         ok, message = EventLog.verify(paths[0])
         print(message)
         return 0 if ok else 2
@@ -295,24 +298,27 @@ def _handle_kb(args, cfg):
 
     policy = Policy(cfg)
     kb = KnowledgeBase(Path(args.workspace) / cfg["kb"]["path"], cfg["kb"]["chunk_chars"], policy=policy)
-    if args.action == "search":
-        try:
-            result = KBSearch(kb, DLPPolicy()).run({"query": args.value})
-        except (PermissionError, ValueError) as exc:
-            print(f"kb search rejected: {DLPPolicy().scanner.redact(str(exc))}", file=sys.stderr)
-            return 2
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
     try:
-        source = Path(args.value)
-        if not source.is_absolute():
-            source = Path(args.workspace) / source
-        KBAdd(kb, policy).run({"path": str(source)})
-    except (PolicyError, OSError, ValueError) as exc:
-        print(f"kb import rejected: {DLPPolicy().scanner.redact(str(exc))}", file=sys.stderr)
-        return 2
-    print("indexed")
-    return 0
+        if args.action == "search":
+            try:
+                result = KBSearch(kb, DLPPolicy()).run({"query": args.value})
+            except (PermissionError, ValueError) as exc:
+                print(f"kb search rejected: {DLPPolicy().scanner.redact(str(exc))}", file=sys.stderr)
+                return 2
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        try:
+            source = Path(args.value)
+            if not source.is_absolute():
+                source = Path(args.workspace) / source
+            KBAdd(kb, policy).run({"path": str(source)})
+        except (PolicyError, OSError, ValueError) as exc:
+            print(f"kb import rejected: {DLPPolicy().scanner.redact(str(exc))}", file=sys.stderr)
+            return 2
+        print("indexed")
+        return 0
+    finally:
+        kb.close()
 
 
 def main(argv=None):

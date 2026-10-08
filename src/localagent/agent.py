@@ -50,6 +50,9 @@ class Agent:
     """Run a bounded agent conversation with centralized policy enforcement."""
 
     _agent_counter = 0
+    _signal_owner = None
+    _signal_previous = None
+    _signal_stack = []
     TERMINAL_STATUSES = {"ok", "failed", "limit_reached", "stuck", "interrupted"}
 
     def __init__(
@@ -171,9 +174,14 @@ class Agent:
         self.log.emit("session_start", role=self.role, model=self.model, depth=self.depth)
         if not cfg["llm"].get("verify_ssl", True):
             self.log.emit("security_warning", verify_ssl=False, message="TLS certificate verification is disabled")
-        # From this point onward run() owns restoration of the previous handler.
+        # SIGINT is process-global. Keep one dispatcher installed and track
+        # nested agents explicitly so child agents cannot corrupt restoration.
         self._oldint = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, self._interrupt)
+        if Agent._signal_owner is None:
+            Agent._signal_previous = self._oldint
+            signal.signal(signal.SIGINT, Agent._dispatch_signal)
+        Agent._signal_stack.append(self)
+        Agent._signal_owner = self
         self._signal_installed = True
 
     def model_profile(self):
@@ -496,12 +504,29 @@ class Agent:
         self._finalize(terminal, reason=safe_reason)
         raise RuntimeError(safe_reason)
 
+    @classmethod
+    def _dispatch_signal(cls, signum, frame):
+        owner = cls._signal_owner
+        if owner is not None:
+            owner._interrupt(signum, frame)
+        elif cls._signal_previous not in (None, cls._dispatch_signal):
+            cls._signal_previous(signum, frame)
+
     def _restore_signal(self):
-        if self._signal_installed:
-            try:
-                signal.signal(signal.SIGINT, self._oldint)
-            finally:
-                self._signal_installed = False
+        if not self._signal_installed:
+            return
+        try:
+            if self in Agent._signal_stack:
+                Agent._signal_stack.remove(self)
+            if Agent._signal_owner is self:
+                Agent._signal_owner = Agent._signal_stack[-1] if Agent._signal_stack else None
+            if Agent._signal_owner is None:
+                previous = Agent._signal_previous
+                Agent._signal_previous = None
+                if previous is not None:
+                    signal.signal(signal.SIGINT, previous)
+        finally:
+            self._signal_installed = False
 
     def _dlp_context(self, operation, value):
         """Return model-safe data; raw blocked content never enters messages/logs."""
