@@ -399,6 +399,19 @@ class RunTests(Exec):
                 continue
             lines.append(line)
         return "\n".join(lines)
+    @staticmethod
+    def _sanitize_junit(root, scanner=SecretScanner):
+        """Mask secret-bearing JUnit fields before the report becomes durable."""
+        for element in root.iter():
+            for key, value in list(element.attrib.items()):
+                if scanner.scan(value):
+                    element.attrib[key] = scanner.REDACTED
+            if element.text and scanner.scan(element.text):
+                element.text = scanner.REDACTED
+            if element.tail and scanner.scan(element.tail):
+                element.tail = scanner.REDACTED
+        return root
+
     def run(self, a):
         argv = self.execution_policy.test_argv(a["targets"])
         r = self._run("run_tests", argv, self.cfg["exec"].get("timeout_s", 120))
@@ -409,7 +422,9 @@ class RunTests(Exec):
         report = self.p.root / "scratch" / "pytest-results.xml"
         if report.is_file():
             try:
-                root = ET.parse(report).getroot()
+                tree = ET.parse(report)
+                root = self._sanitize_junit(tree.getroot())
+                tree.write(report, encoding="utf-8", xml_declaration=True)
                 cases = []
                 for case in root.iter("testcase"):
                     item = {"test": case.attrib.get("classname", "") + ("::" if case.attrib.get("classname") else "") + case.attrib.get("name", ""),

@@ -58,3 +58,32 @@ def test_secret_scanner_safe_corpus_has_no_false_positives():
 def test_coder_has_all_execution_tools():
     text = Path("agents/coder.md").read_text(encoding="utf-8")
     assert all(name in text for name in ("run_script", "run_module", "run_tests"))
+
+
+def test_junit_report_is_masked_before_durable_storage():
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(
+        "<testsuite><testcase classname='tests.x' name='test_bad' line='9'>"
+        "<failure message='password=supersecretvalue'>trace password=supersecretvalue</failure>"
+        "</testcase></testsuite>"
+    )
+    masked = RunTests._sanitize_junit(root)
+    failure = masked.find('.//failure')
+    assert failure is not None
+    assert failure.attrib['message'] == '[REDACTED]'
+    assert failure.text == '[REDACTED]'
+    assert 'supersecretvalue' not in ET.tostring(masked, encoding='unicode')
+
+
+def test_sandbox_does_not_grant_proc_runtime_by_default():
+    source = Path('src/localagent/tools/sandbox.py').read_text(encoding='utf-8')
+    start = source.index('for candidate in ("/usr"')
+    end = source.index('if libc.prctl', start)
+    assert '"/proc"' not in source[start:end]
+
+
+def test_system_installer_freezes_venv_after_install():
+    source = Path('scripts/install-system.sh').read_text(encoding='utf-8')
+    install_at = source.index('pip install')
+    freeze_at = source.index('chmod -R a-w')
+    assert install_at < freeze_at

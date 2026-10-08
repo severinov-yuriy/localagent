@@ -295,7 +295,7 @@ def apply_landlock(workspace: Path, scratch: Path, trusted_executable: Path, rw_
 
     # Standard system runtime files/libraries.  Missing paths are harmless;
     # the interpreter's own tree above is still required.
-    for candidate in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/dev", "/proc", "/sys"):
+    for candidate in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/dev", "/sys"):
         p = Path(candidate)
         if p.exists():
             _add_path_rule(ruleset, p, LANDLOCK_READ_ONLY_FS)

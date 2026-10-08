@@ -17,9 +17,10 @@ if ! id "$USER_NAME" >/dev/null 2>&1; then
 fi
 install -d -o root -g root -m 0755 "$PREFIX"
 $PYTHON -m venv "$PREFIX/venv"
+"$PREFIX/venv/bin/python" -m pip install --no-cache-dir .
+# Freeze the deployment environment only after installation has completed.
 chown -R root:root "$PREFIX/venv"
 chmod -R a-w "$PREFIX/venv"
-"$PREFIX/venv/bin/python" -m pip install --no-cache-dir .
 install -d -o "$USER_NAME" -g "$GROUP_NAME" -m 0700 "${WORKSPACE:-/var/lib/localagent/workspace}"
 cat <<EOF
 Installed localagent in $PREFIX/venv.
